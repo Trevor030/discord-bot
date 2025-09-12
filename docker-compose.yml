@@ -5,4 +5,7 @@ services:
     build: .
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - big-bear-crafty=crafty   # <-- sostituisci con il nome esatto del container
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
