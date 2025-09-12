@@ -1,14 +1,14 @@
-// Bot Discord + API Crafty con varianti di endpoint
+// Bot Discord + Crafty API (tutte le varianti di endpoint) – comandi testuali !server
 const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
 const https = require('https');
 const http = require('http');
 
-const TOKEN  = process.env.DISCORD_TOKEN;
-const CRAFTY_URL = (process.env.CRAFTY_URL || '').replace(/\/+$/, '');
-const API_KEY = process.env.CRAFTY_API_KEY || '';
-const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
-const INSECURE = process.env.CRAFTY_INSECURE === '1';
+const TOKEN       = process.env.DISCORD_TOKEN;
+const CRAFTY_URL  = (process.env.CRAFTY_URL || '').replace(/\/+$/, '');
+const API_KEY     = process.env.CRAFTY_API_KEY || '';
+const SERVER_ID   = process.env.CRAFTY_SERVER_ID || '';
+const INSECURE    = process.env.CRAFTY_INSECURE === '1'; // se usi https self-signed: metti 1
 
 if (!TOKEN) { console.error('❌ Manca DISCORD_TOKEN'); process.exit(1); }
 
@@ -16,7 +16,7 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// axios client robusto
+// axios “robusto”
 const AXIOS = axios.create({
   timeout: 10000,
   maxRedirects: 3,
@@ -31,9 +31,9 @@ function hdrs(key) {
   ];
 }
 
-async function tryReq(list) {
+async function tryReq(variants) {
   let lastErr;
-  for (const fn of list) {
+  for (const fn of variants) {
     try {
       const r = await fn();
       if (r && r.status >= 200 && r.status < 300) return r;
@@ -45,64 +45,74 @@ async function tryReq(list) {
   throw lastErr || new Error('Nessuna risposta valida');
 }
 
-// ---- API wrappers ----
-async function craftyPower(action) {
-  if (!CRAFTY_URL || !API_KEY || !SERVER_ID) throw new Error('Config API Crafty mancante (CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID).');
+/* ================== API WRAPPERS ================== */
+
+async function craftyList() {
+  if (!CRAFTY_URL || !API_KEY) throw new Error('Config mancante (CRAFTY_URL, CRAFTY_API_KEY).');
   const H = hdrs(API_KEY);
-  return await tryReq([
-    () => AXIOS.post(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}/power`, { action }, { headers: H[0] }),
-    () => AXIOS.post(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}/power`, { action }, { headers: H[1] }),
-    () => AXIOS.post(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}/power/${action}`, {}, { headers: H[0] }),
-    () => AXIOS.post(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}/power/${action}`, {}, { headers: H[1] }),
-    () => AXIOS.post(`${CRAFTY_URL}/api/servers/${SERVER_ID}/power/${action}`, {}, { headers: H[0] }),
-    () => AXIOS.post(`${CRAFTY_URL}/panel/api/v3/servers/${SERVER_ID}/power`, { action }, { headers: H[0] }),
-    () => AXIOS.post(`${CRAFTY_URL}/panel/api/v2/servers/${SERVER_ID}/power/${action}`, {}, { headers: H[0] }),
-  ]);
+  // Prova tutte le varianti note
+  return (await tryReq([
+    () => AXIOS.get(`${CRAFTY_URL}/api/v3/servers`,         { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/api/v2/servers`,         { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/api/servers`,            { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v3/servers`,   { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v2/servers`,   { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/crafty/api/v3/servers`,  { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/crafty/api/v2/servers`,  { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/crafty/api/servers`,     { headers: H[0] }),
+  ])).data;
 }
 
 async function craftyStatus() {
-  if (!CRAFTY_URL || !API_KEY || !SERVER_ID) throw new Error('Config API Crafty mancante (CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID).');
+  if (!CRAFTY_URL || !API_KEY || !SERVER_ID) throw new Error('Config mancante (CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID).');
   const H = hdrs(API_KEY);
   const res = await tryReq([
-    () => AXIOS.get(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}`, { headers: H[1] }),
-    () => AXIOS.get(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}`, { headers: H[1] }),
-    () => AXIOS.get(`${CRAFTY_URL}/api/servers/${SERVER_ID}`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v3/servers/${SERVER_ID}`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v2/servers/${SERVER_ID}`, { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}`,        { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}`,        { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/api/servers/${SERVER_ID}`,           { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v3/servers/${SERVER_ID}`,  { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v2/servers/${SERVER_ID}`,  { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/crafty/api/v3/servers/${SERVER_ID}`, { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/crafty/api/v2/servers/${SERVER_ID}`, { headers: H[0] }),
+    () => AXIOS.get(`${CRAFTY_URL}/crafty/api/servers/${SERVER_ID}`,    { headers: H[0] }),
   ]);
-  const data = res.data || {};
-  const st = data.state || data.status || data.power || data.running || data?.server?.state || data?.server?.status;
+  const d = res.data || {};
+  const st = d.state || d.status || d.power || d.running || d?.server?.state || d?.server?.status;
   if (typeof st === 'boolean') return st ? 'running' : 'stopped';
   return st || 'unknown';
 }
 
-// ---- Debug: lista server ----
-async function craftyList() {
+async function craftyPower(action) {
+  if (!CRAFTY_URL || !API_KEY || !SERVER_ID) throw new Error('Config mancante (CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID).');
   const H = hdrs(API_KEY);
-  const res = await tryReq([
-    () => AXIOS.get(`${CRAFTY_URL}/api/v3/servers`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/api/v2/servers`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/api/servers`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v3/servers`, { headers: H[0] }),
-    () => AXIOS.get(`${CRAFTY_URL}/panel/api/v2/servers`, { headers: H[0] }),
+  return await tryReq([
+    // v3 style
+    () => AXIOS.post(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}/power`,        { action }, { headers: H[0] }),
+    () => AXIOS.post(`${CRAFTY_URL}/panel/api/v3/servers/${SERVER_ID}/power`,  { action }, { headers: H[0] }),
+    () => AXIOS.post(`${CRAFTY_URL}/crafty/api/v3/servers/${SERVER_ID}/power`, { action }, { headers: H[0] }),
+
+    // v2 / generic style
+    () => AXIOS.post(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}/power/${action}`,        {}, { headers: H[0] }),
+    () => AXIOS.post(`${CRAFTY_URL}/api/servers/${SERVER_ID}/power/${action}`,           {}, { headers: H[0] }),
+    () => AXIOS.post(`${CRAFTY_URL}/panel/api/v2/servers/${SERVER_ID}/power/${action}`,  {}, { headers: H[0] }),
+    () => AXIOS.post(`${CRAFTY_URL}/crafty/api/v2/servers/${SERVER_ID}/power/${action}`, {}, { headers: H[0] }),
+    () => AXIOS.post(`${CRAFTY_URL}/crafty/api/servers/${SERVER_ID}/power/${action}`,    {}, { headers: H[0] }),
   ]);
-  return res.data;
 }
 
-// ---- Bot commands ----
+/* ================== BOT (TESTO) ================== */
+
 client.on('messageCreate', async (m) => {
   if (m.author.bot) return;
   const t = m.content.trim().toLowerCase();
 
   if (t === '!server debug') {
     try {
-      const res = await craftyList();
-      const names = JSON.stringify(res).slice(0, 400);
-      return void m.channel.send('✅ API ok. Risposta: ```' + names + '```');
+      const data = await craftyList();
+      return void m.channel.send('✅ API ok. /servers risponde:\n```' + JSON.stringify(data).slice(0, 900) + '```');
     } catch (e) {
-      return void m.channel.send(`❌ API errore: \`${e.message}\` – URL usato: ${CRAFTY_URL}`);
+      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
+      return void m.channel.send(`❌ API errore: \`${msg}\` — URL: ${CRAFTY_URL}`);
     }
   }
 
@@ -111,7 +121,8 @@ client.on('messageCreate', async (m) => {
       const st = await craftyStatus();
       return void m.channel.send(`ℹ️ Stato server Crafty: **${st}**`);
     } catch (e) {
-      return void m.channel.send(`❌ Errore status: \`${e.message}\``);
+      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
+      return void m.channel.send(`❌ Errore status: \`${msg}\``);
     }
   }
 
@@ -122,17 +133,19 @@ client.on('messageCreate', async (m) => {
       await craftyPower(action);
       return void m.channel.send(
         action === 'start' ? '🚀 Avvio richiesto.' :
-        action === 'stop' ? '⏹️ Arresto richiesto.' : '🔄 Riavvio richiesto.'
+        action === 'stop'  ? '⏹️ Arresto richiesto.' :
+                             '🔄 Riavvio richiesto.'
       );
     } catch (e) {
-      return void m.channel.send(`❌ Errore power: \`${e.message}\``);
+      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
+      return void m.channel.send(`❌ Errore power: \`${msg}\``);
     }
   }
 });
 
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`CRAFTY_URL=${CRAFTY_URL || '(manca)'}, SERVER_ID=${SERVER_ID || '(manca)'}`);
+  console.log(`CRAFTY_URL=${CRAFTY_URL || '(manca)'} | SERVER_ID=${SERVER_ID || '(manca)'} | INSECURE=${INSECURE ? '1' : '0'}`);
 });
 
 client.login(TOKEN);
