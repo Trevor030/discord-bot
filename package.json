@@ -1,0 +1,12 @@
+{
+  "name": "discord-bot-crafty",
+  "version": "1.0.0",
+  "description": "Discord bot to control a Docker container (Crafty) via slash commands",
+  "main": "index.js",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "discord.js": "^14.15.2",
+    "dockerode": "^4.0.2"
+  }
+}
