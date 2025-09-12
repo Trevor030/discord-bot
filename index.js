@@ -1,16 +1,15 @@
-// Bot Discord + Crafty via API: API-Key oppure login (username/password) → Bearer token
 const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
 const https = require('https');
 const http = require('http');
 
-const TOKEN       = process.env.DISCORD_TOKEN;
-const BASE_URL    = (process.env.CRAFTY_URL || '').replace(/\/+$/, '');        // es. https://IP:8443/panel
-const API_KEY     = process.env.CRAFTY_API_KEY || '';                          // opzionale
-const USERNAME    = process.env.CRAFTY_USERNAME || '';                         // fallback login
-const PASSWORD    = process.env.CRAFTY_PASSWORD || '';                         // fallback login
-const SERVER_ID   = process.env.CRAFTY_SERVER_ID || '';
-const INSECURE    = process.env.CRAFTY_INSECURE === '1';
+const TOKEN     = process.env.DISCORD_TOKEN;
+const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/,'');   // es. https://IP:8443  (senza /panel)
+const API_KEY   = process.env.CRAFTY_API_KEY || '';
+const USERNAME  = process.env.CRAFTY_USERNAME || '';
+const PASSWORD  = process.env.CRAFTY_PASSWORD || '';
+const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
+const INSECURE  = process.env.CRAFTY_INSECURE === '1';
 
 if (!TOKEN) { console.error('❌ Manca DISCORD_TOKEN'); process.exit(1); }
 
@@ -19,45 +18,19 @@ const client = new Client({
 });
 
 const AXIOS = axios.create({
-  baseURL: BASE_URL,
-  timeout: 10000,
+  baseURL: BASE,
+  timeout: 12000,
   maxRedirects: 0,
   httpAgent: new http.Agent({ keepAlive: true }),
   httpsAgent: new https.Agent({ keepAlive: true, rejectUnauthorized: !INSECURE }),
-  validateStatus: s => s >= 200 && s < 400   // considera anche 3xx per intercettare redirect a login
+  validateStatus: s => s >= 200 && s < 400
 });
 
-let bearerToken = ''; // cache token dopo il login
+let bearerToken = '';
 
 function isHTML(r) {
   const ct = r.headers?.['content-type'] || '';
   return ct.includes('text/html') || (typeof r.data === 'string' && r.data.trim().startsWith('<!DOCTYPE'));
-}
-
-async function loginIfNeeded() {
-  if (bearerToken) return bearerToken;
-  if (!USERNAME || !PASSWORD) throw new Error('Serve API key valida oppure CRAFTY_USERNAME/CRAFTY_PASSWORD');
-  // Prova le due varianti più comuni:
-  const payload = { username: USERNAME, password: PASSWORD };
-  const paths = [
-    '/api/v3/auth/login',          // BASE_URL già contiene /panel
-    '/panel/api/v3/auth/login',    // nel caso BASE_URL fosse senza /panel
-  ];
-  let lastErr;
-  for (const p of paths) {
-    try {
-      const r = await AXIOS.post(p, payload);
-      if (isHTML(r)) { lastErr = new Error('Login ha restituito HTML (probabile path errato)'); continue; }
-      const tok = r.data?.token || r.data?.access_token || r.data?.jwt || r.data?.data?.token;
-      if (tok) {
-        bearerToken = tok;
-        console.log('🔐 Login Crafty OK (Bearer token ottenuto)');
-        return bearerToken;
-      }
-      lastErr = new Error('Risposta login senza token');
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr || new Error('Login Crafty fallito');
 }
 
 function headerVariants() {
@@ -69,81 +42,123 @@ function headerVariants() {
   if (bearerToken) {
     arr.push({ 'Authorization': `Bearer ${bearerToken}`, 'Content-Type': 'application/json' });
   }
-  return arr.length ? arr : [ { 'Content-Type': 'application/json' } ];
+  return arr.length ? arr : [{ 'Content-Type': 'application/json' }];
 }
 
-async function tryReq(builders) {
+async function tryReq(builders, label) {
   let lastErr;
-  for (const b of builders) {
+  for (const build of builders) {
+    const { method, url, data, headers } = build();
     try {
-      const r = await b();
-      if (isHTML(r)) { lastErr = new Error('HTML/login page'); continue; }
-      if (r.status >= 200 && r.status < 300) return r;
-      lastErr = new Error(`HTTP ${r.status}`);
-    } catch (e) { lastErr = e; }
+      const r = await AXIOS.request({ method, url, data, headers });
+      if (isHTML(r)) { lastErr = new Error(`HTML @ ${url}`); continue; }
+      if (r.status >= 200 && r.status < 300) { console.log(`✔️ ${label}: ${method.toUpperCase()} ${url}`); return r; }
+      lastErr = new Error(`HTTP ${r.status} @ ${url}`);
+    } catch (e) {
+      lastErr = e;
+    }
   }
-  throw lastErr || new Error('Nessuna risposta valida');
+  throw lastErr || new Error(`${label}: nessuna risposta valida`);
 }
 
-// --- endpoints da provare (prefisso /panel già in BASE_URL) ---
-const LIST_PATHS   = ['/api/v3/servers','/api/v2/servers','/api/servers'];
-const STATUS_PATHS = id => [`/api/v3/servers/${id}`, `/api/v2/servers/${id}`, `/api/servers/${id}`];
-const POWER_PATHS  = id => ([
-  { path: `/api/v3/servers/${id}/power`, body: (a)=>({action:a}) },
-  { path: `/api/v2/servers/${id}/power/start`,   body: ()=>({}), action:'start'},
-  { path: `/api/v2/servers/${id}/power/stop`,    body: ()=>({}), action:'stop'},
-  { path: `/api/v2/servers/${id}/power/restart`, body: ()=>({}), action:'restart'},
-  { path: `/api/servers/${id}/power/start`,      body: ()=>({}), action:'start'},
-  { path: `/api/servers/${id}/power/stop`,       body: ()=>({}), action:'stop'},
-  { path: `/api/servers/${id}/power/restart`,    body: ()=>({}), action:'restart'},
-]);
+/* ---------- LOGIN ---------- */
+async function loginIfNeeded() {
+  if (bearerToken) return bearerToken;
+  if (!USERNAME || !PASSWORD) throw new Error('Serve API key valida oppure CRAFTY_USERNAME/CRAFTY_PASSWORD');
+  const payload = { username: USERNAME, password: PASSWORD };
 
-async function ensureAuth(headersBuilders) {
-  // prova con API key; se ottieni HTML/redirect/401, prova login e ripeti con Bearer
-  try { return await headersBuilders(); }
-  catch {
+  // Prova tutte le combinazioni note (con e senza /panel)
+  const loginPaths = [
+    '/api/v3/auth/login',
+    '/api/auth/login',
+    '/api/login',
+    '/panel/api/v3/auth/login',
+    '/panel/api/auth/login',
+    '/panel/api/login',
+  ];
+
+  let last;
+  for (const p of loginPaths) {
+    try {
+      const r = await AXIOS.post(p, payload);
+      if (isHTML(r)) { last = new Error(`HTML @ ${p}`); continue; }
+      const tok = r.data?.token || r.data?.access_token || r.data?.jwt || r.data?.data?.token;
+      if (tok) {
+        bearerToken = tok;
+        console.log(`🔐 Login OK via ${p}`);
+        return bearerToken;
+      }
+      last = new Error(`Login senza token @ ${p}`);
+    } catch (e) { last = e; }
+  }
+  throw last || new Error('Login fallito su tutte le varianti');
+}
+
+/* ---------- API ---------- */
+const listPaths   = [
+  '/api/v3/servers','/api/v2/servers','/api/servers',
+  '/panel/api/v3/servers','/panel/api/v2/servers','/panel/api/servers'
+];
+const statusPaths = id => [
+  `/api/v3/servers/${id}`, `/api/v2/servers/${id}`, `/api/servers/${id}`,
+  `/panel/api/v3/servers/${id}`, `/panel/api/v2/servers/${id}`, `/panel/api/servers/${id}`
+];
+const powerBuilders = (id, action) => [
+  // v3 JSON body
+  () => ({ method:'post', url:`/api/v3/servers/${id}/power`, data:{ action } }),
+  () => ({ method:'post', url:`/panel/api/v3/servers/${id}/power`, data:{ action } }),
+  // v2 style
+  () => ({ method:'post', url:`/api/v2/servers/${id}/power/${action}` }),
+  () => ({ method:'post', url:`/panel/api/v2/servers/${id}/power/${action}` }),
+  // generic
+  () => ({ method:'post', url:`/api/servers/${id}/power/${action}` }),
+  () => ({ method:'post', url:`/panel/api/servers/${id}/power/${action}` }),
+];
+
+async function withAuthBuilders(buildersFn, label) {
+  // prova con API key; se HTML/401/404, fai login e riprova con Bearer
+  const headers1 = headerVariants();
+  try {
+    return await tryReq(buildersFn(headers1), label);
+  } catch (_) {
     await loginIfNeeded();
-    return headerVariants();
+    const headers2 = headerVariants();
+    return await tryReq(buildersFn(headers2), label);
   }
 }
 
 async function getServers() {
-  const headers = await ensureAuth(async () => headerVariants());
-  return (await tryReq(
-    LIST_PATHS.flatMap(p =>
-      headers.map(h => () => AXIOS.get(p, { headers: h }))
-    )
-  )).data;
+  const res = await withAuthBuilders(
+    headers => listPaths.flatMap(p => headers.map(h => () => ({ method:'get', url:p, headers:h }))),
+    'LIST'
+  );
+  return res.data;
 }
 
 async function getStatus(id) {
-  const headers = await ensureAuth(async () => headerVariants());
-  const res = await tryReq(
-    STATUS_PATHS(id).flatMap(p =>
-      headers.map(h => () => AXIOS.get(p, { headers: h }))
-    )
+  const res = await withAuthBuilders(
+    headers => statusPaths(id).flatMap(p => headers.map(h => () => ({ method:'get', url:p, headers:h }))),
+    'STATUS'
   );
   const d = res.data || {};
-  const cands = [d.state,d.status,d.power,d.running,d.online,d?.server?.state,d?.server?.status,d?.data?.state,d?.data?.status];
+  const cands = [d.state,d.status,d.power,d.running,d.online,d?.server?.state,d?.server?.status,d?.data?.state,d?.data?.status,d?.result?.status];
   for (const v of cands) {
     if (v === true)  return 'running';
     if (v === false) return 'stopped';
     if (typeof v === 'string') return v.toLowerCase();
   }
+  if (typeof d?.result?.running === 'boolean') return d.result.running ? 'running' : 'stopped';
   return 'unknown';
 }
 
 async function power(id, action) {
-  const headers = await ensureAuth(async () => headerVariants());
-  await tryReq(
-    POWER_PATHS(id).flatMap(obj => {
-      if (obj.action && obj.action !== action) return [];
-      return headers.map(h => () => AXIOS.post(obj.path, obj.body(action), { headers: h }));
-    })
+  await withAuthBuilders(
+    headers => powerBuilders(id, action).flatMap(b => headers.map(h => () => ({ ...b(), headers:h }))),
+    `POWER:${action}`
   );
 }
 
-/* ====== Bot: comandi testuali ====== */
+/* ---------- BOT ---------- */
 client.on('messageCreate', async (m) => {
   if (m.author.bot) return;
   const t = m.content.trim().toLowerCase();
@@ -154,7 +169,7 @@ client.on('messageCreate', async (m) => {
       return void m.channel.send('✅ API ok. /servers:\n```json\n' + JSON.stringify(data, null, 2).slice(0, 1800) + '\n```');
     } catch (e) {
       const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
-      return void m.channel.send(`❌ API errore: \`${msg}\` — URL base: ${BASE_URL}`);
+      return void m.channel.send(`❌ API errore: \`${msg}\` — base: ${BASE}`);
     }
   }
 
@@ -187,7 +202,7 @@ client.on('messageCreate', async (m) => {
 
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`BASE_URL=${BASE_URL} | SERVER_ID=${SERVER_ID} | INSECURE=${INSECURE ? '1' : '0'} | API_KEY=${API_KEY ? 'set' : 'none'} | USER=${USERNAME ? 'set' : 'none'}`);
+  console.log(`BASE=${BASE} | INSECURE=${INSECURE?1:0} | API_KEY=${API_KEY?'set':'none'} | USER=${USERNAME?'set':'none'} | SERVER_ID=${SERVER_ID||'(manca)'}`);
 });
 
 client.login(TOKEN);
