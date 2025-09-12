@@ -2,99 +2,102 @@ const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
 const https = require('https');
 const http = require('http');
+const { wrapper } = require('axios-cookiejar-support');
+const { CookieJar, Cookie } = require('tough-cookie');
 
 const TOKEN     = process.env.DISCORD_TOKEN;
-const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/,'');   // es. https://IP:8443  (senza /panel)
-const API_KEY   = process.env.CRAFTY_API_KEY || '';
+const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/,''); // es. https://IP:8443/panel
 const USERNAME  = process.env.CRAFTY_USERNAME || '';
 const PASSWORD  = process.env.CRAFTY_PASSWORD || '';
 const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
 const INSECURE  = process.env.CRAFTY_INSECURE === '1';
 
 if (!TOKEN) { console.error('❌ Manca DISCORD_TOKEN'); process.exit(1); }
+if (!BASE)  { console.error('❌ Manca CRAFTY_URL'); process.exit(1); }
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-const AXIOS = axios.create({
+const jar = new CookieJar();
+const AX = wrapper(axios.create({
   baseURL: BASE,
   timeout: 12000,
   maxRedirects: 0,
+  withCredentials: true,
+  jar,
   httpAgent: new http.Agent({ keepAlive: true }),
   httpsAgent: new https.Agent({ keepAlive: true, rejectUnauthorized: !INSECURE }),
   validateStatus: s => s >= 200 && s < 400
-});
+}));
 
-let bearerToken = '';
+let csrfHeaderName = 'X-CSRF-Token';
+let csrfToken = '';
 
 function isHTML(r) {
   const ct = r.headers?.['content-type'] || '';
   return ct.includes('text/html') || (typeof r.data === 'string' && r.data.trim().startsWith('<!DOCTYPE'));
 }
 
-function headerVariants() {
-  const arr = [];
-  if (API_KEY) {
-    arr.push({ 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' });
-    arr.push({ 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' });
+async function setTokenCookieIfMissing(tok) {
+  // Crafty di solito imposta già il cookie "token" al login; se non c’è, lo settiamo noi.
+  const url = new URL(BASE);
+  const cookies = await jar.getCookies(BASE);
+  const hasToken = cookies.some(c => c.key === 'token');
+  if (!hasToken && tok) {
+    await jar.setCookie(new Cookie({ key:'token', value: tok, domain: url.hostname, path:'/' }), BASE);
   }
-  if (bearerToken) {
-    arr.push({ 'Authorization': `Bearer ${bearerToken}`, 'Content-Type': 'application/json' });
-  }
-  return arr.length ? arr : [{ 'Content-Type': 'application/json' }];
 }
 
-async function tryReq(builders, label) {
-  let lastErr;
-  for (const build of builders) {
-    const { method, url, data, headers } = build();
-    try {
-      const r = await AXIOS.request({ method, url, data, headers });
-      if (isHTML(r)) { lastErr = new Error(`HTML @ ${url}`); continue; }
-      if (r.status >= 200 && r.status < 300) { console.log(`✔️ ${label}: ${method.toUpperCase()} ${url}`); return r; }
-      lastErr = new Error(`HTTP ${r.status} @ ${url}`);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error(`${label}: nessuna risposta valida`);
+async function extractCsrfFromCookies() {
+  const cookies = await jar.getCookies(BASE);
+  // gorilla/csrf usa cookie "gorilla.csrf.Token" (a volte "_gorilla_csrf")
+  const c1 = cookies.find(c => c.key.toLowerCase().includes('gorilla') && c.key.toLowerCase().includes('csrf'));
+  if (c1) csrfToken = c1.value;
 }
 
-/* ---------- LOGIN ---------- */
-async function loginIfNeeded() {
-  if (bearerToken) return bearerToken;
-  if (!USERNAME || !PASSWORD) throw new Error('Serve API key valida oppure CRAFTY_USERNAME/CRAFTY_PASSWORD');
+async function login() {
+  if (!USERNAME || !PASSWORD) throw new Error('CRAFTY_USERNAME/CRAFTY_PASSWORD mancanti');
   const payload = { username: USERNAME, password: PASSWORD };
-
-  // Prova tutte le combinazioni note (con e senza /panel)
-  const loginPaths = [
+  const paths = [
     '/api/v3/auth/login',
     '/api/auth/login',
     '/api/login',
     '/panel/api/v3/auth/login',
     '/panel/api/auth/login',
-    '/panel/api/login',
+    '/panel/api/login'
   ];
-
   let last;
-  for (const p of loginPaths) {
+  for (const p of paths) {
     try {
-      const r = await AXIOS.post(p, payload);
+      const r = await AX.post(p, payload);
       if (isHTML(r)) { last = new Error(`HTML @ ${p}`); continue; }
       const tok = r.data?.token || r.data?.access_token || r.data?.jwt || r.data?.data?.token;
-      if (tok) {
-        bearerToken = tok;
-        console.log(`🔐 Login OK via ${p}`);
-        return bearerToken;
-      }
-      last = new Error(`Login senza token @ ${p}`);
+      await setTokenCookieIfMissing(tok);
+      // Dopo login, fai una GET alla home per farti dare i cookie CSRF
+      try { await AX.get('/'); } catch {}
+      await extractCsrfFromCookies();
+      console.log(`🔐 Login OK via ${p} | CSRF=${csrfToken ? 'ok' : 'none'}`);
+      return;
     } catch (e) { last = e; }
   }
-  throw last || new Error('Login fallito su tutte le varianti');
+  throw last || new Error('Login fallito');
 }
 
-/* ---------- API ---------- */
+function authHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (csrfToken) h[csrfHeaderName] = csrfToken;
+  return h;
+}
+
+async function req(method, url, data) {
+  const h = authHeaders();
+  const r = await AX.request({ method, url, data, headers: h });
+  if (isHTML(r)) throw new Error('HTML/login page');
+  if (r.status >= 200 && r.status < 300) return r;
+  throw new Error(`HTTP ${r.status}`);
+}
+
 const listPaths   = [
   '/api/v3/servers','/api/v2/servers','/api/servers',
   '/panel/api/v3/servers','/panel/api/v2/servers','/panel/api/servers'
@@ -103,59 +106,51 @@ const statusPaths = id => [
   `/api/v3/servers/${id}`, `/api/v2/servers/${id}`, `/api/servers/${id}`,
   `/panel/api/v3/servers/${id}`, `/panel/api/v2/servers/${id}`, `/panel/api/servers/${id}`
 ];
-const powerBuilders = (id, action) => [
-  // v3 JSON body
-  () => ({ method:'post', url:`/api/v3/servers/${id}/power`, data:{ action } }),
-  () => ({ method:'post', url:`/panel/api/v3/servers/${id}/power`, data:{ action } }),
-  // v2 style
-  () => ({ method:'post', url:`/api/v2/servers/${id}/power/${action}` }),
-  () => ({ method:'post', url:`/panel/api/v2/servers/${id}/power/${action}` }),
-  // generic
-  () => ({ method:'post', url:`/api/servers/${id}/power/${action}` }),
-  () => ({ method:'post', url:`/panel/api/servers/${id}/power/${action}` }),
+const powerVariants = (id, action) => [
+  { m:'post', u:`/api/v3/servers/${id}/power`, d:{action} },
+  { m:'post', u:`/panel/api/v3/servers/${id}/power`, d:{action} },
+  { m:'post', u:`/api/v2/servers/${id}/power/${action}` },
+  { m:'post', u:`/panel/api/v2/servers/${id}/power/${action}` },
+  { m:'post', u:`/api/servers/${id}/power/${action}` },
+  { m:'post', u:`/panel/api/servers/${id}/power/${action}` }
 ];
 
-async function withAuthBuilders(buildersFn, label) {
-  // prova con API key; se HTML/401/404, fai login e riprova con Bearer
-  const headers1 = headerVariants();
-  try {
-    return await tryReq(buildersFn(headers1), label);
-  } catch (_) {
-    await loginIfNeeded();
-    const headers2 = headerVariants();
-    return await tryReq(buildersFn(headers2), label);
-  }
-}
-
 async function getServers() {
-  const res = await withAuthBuilders(
-    headers => listPaths.flatMap(p => headers.map(h => () => ({ method:'get', url:p, headers:h }))),
-    'LIST'
-  );
-  return res.data;
+  let last;
+  for (const p of listPaths) {
+    try { const r = await req('get', p); console.log('✔️ LIST', p); return r.data; }
+    catch (e) { last = e; }
+  }
+  throw last || new Error('LIST fallita');
 }
 
 async function getStatus(id) {
-  const res = await withAuthBuilders(
-    headers => statusPaths(id).flatMap(p => headers.map(h => () => ({ method:'get', url:p, headers:h }))),
-    'STATUS'
-  );
-  const d = res.data || {};
-  const cands = [d.state,d.status,d.power,d.running,d.online,d?.server?.state,d?.server?.status,d?.data?.state,d?.data?.status,d?.result?.status];
-  for (const v of cands) {
-    if (v === true)  return 'running';
-    if (v === false) return 'stopped';
-    if (typeof v === 'string') return v.toLowerCase();
+  let last;
+  for (const p of statusPaths(id)) {
+    try {
+      const r = await req('get', p);
+      console.log('✔️ STATUS', p);
+      const d = r.data || {};
+      const cands = [d.state,d.status,d.power,d.running,d.online,d?.server?.state,d?.server?.status,d?.data?.state,d?.data?.status,d?.result?.status];
+      for (const v of cands) {
+        if (v === true)  return 'running';
+        if (v === false) return 'stopped';
+        if (typeof v === 'string') return v.toLowerCase();
+      }
+      if (typeof d?.result?.running === 'boolean') return d.result.running ? 'running' : 'stopped';
+      return 'unknown';
+    } catch (e) { last = e; }
   }
-  if (typeof d?.result?.running === 'boolean') return d.result.running ? 'running' : 'stopped';
-  return 'unknown';
+  throw last || new Error('STATUS fallita');
 }
 
 async function power(id, action) {
-  await withAuthBuilders(
-    headers => powerBuilders(id, action).flatMap(b => headers.map(h => () => ({ ...b(), headers:h }))),
-    `POWER:${action}`
-  );
+  let last;
+  for (const v of powerVariants(id, action)) {
+    try { await req(v.m, v.u, v.d); console.log(`✔️ POWER ${action}`, v.u); return; }
+    catch (e) { last = e; }
+  }
+  throw last || new Error(`POWER ${action} fallita`);
 }
 
 /* ---------- BOT ---------- */
@@ -165,21 +160,21 @@ client.on('messageCreate', async (m) => {
 
   if (t === '!server debug') {
     try {
+      await login(); // garantisce i cookie
       const data = await getServers();
       return void m.channel.send('✅ API ok. /servers:\n```json\n' + JSON.stringify(data, null, 2).slice(0, 1800) + '\n```');
     } catch (e) {
-      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
-      return void m.channel.send(`❌ API errore: \`${msg}\` — base: ${BASE}`);
+      return void m.channel.send(`❌ API errore: \`${e.message}\` — base: ${BASE}`);
     }
   }
 
   if (t === '!server status') {
     try {
+      await login();
       const st = await getStatus(SERVER_ID);
       return void m.channel.send(`ℹ️ Stato server: **${st}**`);
     } catch (e) {
-      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
-      return void m.channel.send(`❌ Errore status: \`${msg}\``);
+      return void m.channel.send(`❌ Errore status: \`${e.message}\``);
     }
   }
 
@@ -187,6 +182,7 @@ client.on('messageCreate', async (m) => {
     const map = { on:'start', off:'stop', restart:'restart' };
     const action = map[t.split(' ').pop()];
     try {
+      await login();
       await power(SERVER_ID, action);
       return void m.channel.send(
         action === 'start' ? '🚀 Avvio richiesto.' :
@@ -194,15 +190,14 @@ client.on('messageCreate', async (m) => {
                              '🔄 Riavvio richiesto.'
       );
     } catch (e) {
-      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message || String(e));
-      return void m.channel.send(`❌ Errore power: \`${msg}\``);
+      return void m.channel.send(`❌ Errore power: \`${e.message}\``);
     }
   }
 });
 
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`BASE=${BASE} | INSECURE=${INSECURE?1:0} | API_KEY=${API_KEY?'set':'none'} | USER=${USERNAME?'set':'none'} | SERVER_ID=${SERVER_ID||'(manca)'}`);
+  console.log(`BASE=${BASE} | INSECURE=${INSECURE?1:0} | USER=${USERNAME?'set':'none'} | SERVER_ID=${SERVER_ID||'(manca)'}`);
 });
 
 client.login(TOKEN);
