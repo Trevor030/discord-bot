@@ -4,10 +4,13 @@ services:
   discord-bot:
     build: .
     environment:
-  - DISCORD_TOKEN=${DISCORD_TOKEN}
-  - DISCORD_APP_ID=${DISCORD_APP_ID}
-  - GUILD_ID=${GUILD_ID}
-  - CRAFTY_CONTAINER_NAME=${CRAFTY_CONTAINER_NAME}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_APP_ID=${DISCORD_APP_ID}
+      - GUILD_ID=${GUILD_ID}
+      - CRAFTY_CONTAINER_NAME=${CRAFTY_CONTAINER_NAME}
+      - CRAFTY_URL=${CRAFTY_URL}
+      - CRAFTY_API_KEY=${CRAFTY_API_KEY}
+      - CRAFTY_SERVER_ID=${CRAFTY_SERVER_ID}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
