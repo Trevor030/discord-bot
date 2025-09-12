@@ -1,10 +1,10 @@
 {
-  "name": "discord-bot",
+  "name": "discord-bot-crafty",
   "version": "1.0.0",
   "main": "index.js",
-  "description": "Minimal Discord bot for Portainer/ZimaOS (command !ping)",
   "license": "MIT",
   "dependencies": {
-    "discord.js": "^14.15.2"
+    "discord.js": "^14.15.2",
+    "dockerode": "^4.0.2"
   }
 }
