@@ -3,8 +3,8 @@ const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
 const Docker = require('dockerode');
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const APP_ID = process.env.1408107386522177648;           // <-- metti l'Application ID
-const GUILD_ID = process.env.852675693140901888 || null;       // opzionale: sync più veloce su una sola guild
+const APP_ID = process.env.DISCORD_APP_ID;          
+const GUILD_ID = process.env.GUILD_ID || null;       
 const CRAFTY_NAME = process.env.CRAFTY_CONTAINER_NAME || 'big-bear-crafty';
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
