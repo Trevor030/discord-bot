@@ -1,48 +1,49 @@
-// Reset slash + comandi minimi di test
+// Bot con SLASH (/server ...) + TESTO (!server ...)
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const Docker = require('dockerode');
 
 const TOKEN   = process.env.DISCORD_TOKEN;
 const APP_ID  = process.env.DISCORD_APP_ID;
-const GUILD_ID = process.env.GUILD_ID || null;  // 852675693140901888
+const GUILD_ID = process.env.GUILD_ID || null;
 const CRAFTY  = process.env.CRAFTY_CONTAINER_NAME || 'big-bear-crafty';
 
 if (!TOKEN || !APP_ID) { console.error('Manca DISCORD_TOKEN o DISCORD_APP_ID'); process.exit(1); }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-const rest   = new REST({ version: '10' }).setToken(TOKEN);
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 
-// Comandi NUOVI (rinominato "mcserver" per forzare aggiornamento)
-const pingCmd = new SlashCommandBuilder().setName('ping').setDescription('Risponde pong');
-const mcCmd = new SlashCommandBuilder()
-  .setName('mcserver')
+// Intents includono MessageContent per i comandi testuali
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
+// -------- SLASH definition --------
+const cmd = new SlashCommandBuilder()
+  .setName('server')
   .setDescription('Controlla Crafty')
   .addSubcommand(s => s.setName('status').setDescription('Mostra lo stato'))
   .addSubcommand(s => s.setName('on').setDescription('Accende il server'))
   .addSubcommand(s => s.setName('off').setDescription('Spegne il server'))
   .addSubcommand(s => s.setName('restart').setDescription('Riavvia il server'))
-  .addSubcommand(s => s.setName('list').setDescription('Elenca i container visibili'));
+  .addSubcommand(s => s.setName('list').setDescription('Elenca i container'));
 
-async function syncCommands() {
-  if (!GUILD_ID) {
-    console.log('⚠️ GUILD_ID mancante: registro comandi GLOBALI (possono comparire dopo alcuni minuti)…');
-    await rest.put(Routes.applicationCommands(APP_ID), { body: [pingCmd.toJSON(), mcCmd.toJSON()] });
-    return;
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+async function registerSlash() {
+  const body = [cmd.toJSON()];
+  if (GUILD_ID) {
+    await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body });
+    console.log('✅ Slash registrati su GUILD:', GUILD_ID);
+  } else {
+    await rest.put(Routes.applicationCommands(APP_ID), { body });
+    console.log('✅ Slash registrati GLOBALI');
   }
-  // 1) Elimina TUTTI i comandi di questa guild (hard reset)
-  const existing = await rest.get(Routes.applicationGuildCommands(APP_ID, GUILD_ID));
-  console.log('🔧 Comandi esistenti prima del reset:', existing.map(c => c.name).join(', ') || '(nessuno)');
-  for (const cmd of existing) {
-    await rest.delete(Routes.applicationGuildCommand(APP_ID, GUILD_ID, cmd.id));
-  }
-  // 2) Registra i nuovi
-  await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), {
-    body: [pingCmd.toJSON(), mcCmd.toJSON()]
-  });
-  console.log('✅ Comandi registrati sulla GUILD:', GUILD_ID);
 }
 
+// -------- helpers Docker --------
 async function getCrafty() {
   try { const c = docker.getContainer(CRAFTY); await c.inspect(); return c; }
   catch { return null; }
@@ -52,27 +53,26 @@ async function statusOf(c) {
   return s.Running ? 'running' : (s.Status || 'stopped');
 }
 
+// -------- ready --------
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   try {
-    await syncCommands();
+    const list = await docker.listContainers({ all: true });
+    console.log('🧩 Containers:', list.map(x => (x.Names?.[0]||'').replace(/^\//,'')).join(', ') || '(nessuno)');
+    await registerSlash();
   } catch (e) {
-    console.error('❌ Sync error:', e?.message || e);
+    console.error('⚠️ Setup error:', e.message || e);
   }
 });
 
+// -------- SLASH handler --------
 client.on('interactionCreate', async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
-    console.log('🔔 interaction:', { guild: i.guildId, name: i.commandName, sub: i.options.getSubcommand(false) });
+    if (i.commandName !== 'server') return;
 
-    if (i.commandName === 'ping') {
-      return i.reply('pong');
-    }
+    const sub = i.options.getSubcommand(false);
 
-    if (i.commandName !== 'mcserver') return;
-
-    const sub = i.options.getSubcommand();
     if (sub === 'list') {
       await i.deferReply();
       const all = await docker.listContainers({ all: true });
@@ -103,9 +103,51 @@ client.on('interactionCreate', async (i) => {
 
     return i.reply({ content: 'Comando non riconosciuto (sub).', ephemeral: true });
   } catch (e) {
-    console.error('❌ Handler error:', e);
+    console.error('❌ slash error:', e);
     if (i.deferred || i.replied) return i.editReply(`Errore: \`${e.message || e}\``);
     return i.reply({ content: `Errore: \`${e.message || e}\``, ephemeral: true });
+  }
+});
+
+// -------- TESTO handler --------
+client.on('messageCreate', async (m) => {
+  try {
+    if (m.author.bot) return;
+    const t = m.content.trim().toLowerCase();
+
+    if (!t.startsWith('!server')) return;
+
+    if (t === '!server list') {
+      const all = await docker.listContainers({ all: true });
+      const rows = all.map(x => `• ${(x.Names?.[0]||'').replace(/^\//,'')} — ${x.State || x.Status || 'unknown'}`);
+      return m.channel.send(rows.length ? rows.join('\n') : 'Nessun container trovato.');
+    }
+
+    const c = await getCrafty();
+    if (!c) return m.channel.send(`❌ Container **${CRAFTY}** non trovato.`);
+
+    if (t === '!server status') {
+      const st = await statusOf(c);
+      return m.channel.send(`ℹ️ **${CRAFTY}**: **${st}**`);
+    }
+    if (t === '!server on') {
+      const st = await statusOf(c);
+      if (st === 'running') return m.channel.send('✅ Server già acceso.');
+      await c.start(); return m.channel.send('🚀 Server acceso.');
+    }
+    if (t === '!server off') {
+      const st = await statusOf(c);
+      if (st !== 'running') return m.channel.send('✅ Server già spento.');
+      await c.stop({ t: 30 }); return m.channel.send('⏹️ Server spento.');
+    }
+    if (t === '!server restart') {
+      await c.restart({ t: 30 }); return m.channel.send('🔄 Server riavviato.');
+    }
+
+    return m.channel.send('Comando non riconosciuto.');
+  } catch (e) {
+    console.error('❌ text error:', e);
+    return m.channel.send(`Errore: \`${e.message || e}\``);
   }
 });
 
