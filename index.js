@@ -1,12 +1,11 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
-const https = require('https');
-const http = require('http');
 const { wrapper } = require('axios-cookiejar-support');
 const { CookieJar, Cookie } = require('tough-cookie');
 
+// ========= ENV =========
 const TOKEN     = process.env.DISCORD_TOKEN;
-const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/,''); // es. https://IP:8443/panel
+const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/, ''); // es: https://IP:8443/panel
 const USERNAME  = process.env.CRAFTY_USERNAME || '';
 const PASSWORD  = process.env.CRAFTY_PASSWORD || '';
 const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
@@ -15,24 +14,26 @@ const INSECURE  = process.env.CRAFTY_INSECURE === '1';
 if (!TOKEN) { console.error('❌ Manca DISCORD_TOKEN'); process.exit(1); }
 if (!BASE)  { console.error('❌ Manca CRAFTY_URL'); process.exit(1); }
 
+// Se INSECURE=1, ignora certificati self-signed
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = INSECURE ? '0' : '1';
+
+// ========= Discord client =========
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
+// ========= Axios con cookie support =========
 const jar = new CookieJar();
 const AX = wrapper(axios.create({
   baseURL: BASE,
   timeout: 12000,
-  maxRedirects: 0,
   withCredentials: true,
   jar,
-  httpAgent: new http.Agent({ keepAlive: true }),
-  httpsAgent: new https.Agent({ keepAlive: true, rejectUnauthorized: !INSECURE }),
   validateStatus: s => s >= 200 && s < 400
 }));
 
-let csrfHeaderName = 'X-CSRF-Token';
 let csrfToken = '';
+let bearerSet = false;
 
 function isHTML(r) {
   const ct = r.headers?.['content-type'] || '';
@@ -40,18 +41,16 @@ function isHTML(r) {
 }
 
 async function setTokenCookieIfMissing(tok) {
-  // Crafty di solito imposta già il cookie "token" al login; se non c’è, lo settiamo noi.
   const url = new URL(BASE);
   const cookies = await jar.getCookies(BASE);
   const hasToken = cookies.some(c => c.key === 'token');
   if (!hasToken && tok) {
-    await jar.setCookie(new Cookie({ key:'token', value: tok, domain: url.hostname, path:'/' }), BASE);
+    await jar.setCookie(new Cookie({ key: 'token', value: tok, domain: url.hostname, path: '/' }), BASE);
   }
 }
 
 async function extractCsrfFromCookies() {
   const cookies = await jar.getCookies(BASE);
-  // gorilla/csrf usa cookie "gorilla.csrf.Token" (a volte "_gorilla_csrf")
   const c1 = cookies.find(c => c.key.toLowerCase().includes('gorilla') && c.key.toLowerCase().includes('csrf'));
   if (c1) csrfToken = c1.value;
 }
@@ -74,7 +73,6 @@ async function login() {
       if (isHTML(r)) { last = new Error(`HTML @ ${p}`); continue; }
       const tok = r.data?.token || r.data?.access_token || r.data?.jwt || r.data?.data?.token;
       await setTokenCookieIfMissing(tok);
-      // Dopo login, fai una GET alla home per farti dare i cookie CSRF
       try { await AX.get('/'); } catch {}
       await extractCsrfFromCookies();
       console.log(`🔐 Login OK via ${p} | CSRF=${csrfToken ? 'ok' : 'none'}`);
@@ -86,7 +84,7 @@ async function login() {
 
 function authHeaders() {
   const h = { 'Content-Type': 'application/json' };
-  if (csrfToken) h[csrfHeaderName] = csrfToken;
+  if (csrfToken) h['X-CSRF-Token'] = csrfToken;
   return h;
 }
 
@@ -98,6 +96,7 @@ async function req(method, url, data) {
   throw new Error(`HTTP ${r.status}`);
 }
 
+// ========= API paths =========
 const listPaths   = [
   '/api/v3/servers','/api/v2/servers','/api/servers',
   '/panel/api/v3/servers','/panel/api/v2/servers','/panel/api/servers'
@@ -115,6 +114,7 @@ const powerVariants = (id, action) => [
   { m:'post', u:`/panel/api/servers/${id}/power/${action}` }
 ];
 
+// ========= API wrappers =========
 async function getServers() {
   let last;
   for (const p of listPaths) {
@@ -153,14 +153,14 @@ async function power(id, action) {
   throw last || new Error(`POWER ${action} fallita`);
 }
 
-/* ---------- BOT ---------- */
+// ========= Bot commands =========
 client.on('messageCreate', async (m) => {
   if (m.author.bot) return;
   const t = m.content.trim().toLowerCase();
 
   if (t === '!server debug') {
     try {
-      await login(); // garantisce i cookie
+      await login();
       const data = await getServers();
       return void m.channel.send('✅ API ok. /servers:\n```json\n' + JSON.stringify(data, null, 2).slice(0, 1800) + '\n```');
     } catch (e) {
