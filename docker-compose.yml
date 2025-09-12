@@ -5,8 +5,8 @@ services:
     build: .
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_APP_ID=${1408107386522177648}          # Application ID dal Developer Portal
-      - GUILD_ID=${852675693140901888}                      # opzionale (metti l’ID del tuo server per sync immediata)
+      - DISCORD_APP_ID=1408107386522177648         # Application ID dal Developer Portal
+      - GUILD_ID=852675693140901888                    # opzionale (metti l’ID del tuo server per sync immediata)
       - CRAFTY_CONTAINER_NAME=big-bear-crafty     # dal tuo Portainer
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
