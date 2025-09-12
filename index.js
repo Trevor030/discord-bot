@@ -1,154 +1,140 @@
-// Bot con SLASH (/server ...) + TESTO (!server ...)
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const Docker = require('dockerode');
+// Bot Discord: controlla il server Minecraft dentro Crafty via API (non il container)
+const { Client, GatewayIntentBits } = require('discord.js');
+const axios = require('axios');
+const Docker = require('dockerode'); // solo per fallback opzionale
 
-const TOKEN   = process.env.DISCORD_TOKEN;
-const APP_ID  = process.env.DISCORD_APP_ID;
-const GUILD_ID = process.env.GUILD_ID || null;
-const CRAFTY  = process.env.CRAFTY_CONTAINER_NAME || 'big-bear-crafty';
+const TOKEN  = process.env.DISCORD_TOKEN;
+const CRAFTY_URL = (process.env.CRAFTY_URL || '').replace(/\/+$/, '');
+const API_KEY = process.env.CRAFTY_API_KEY || '';
+const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
+const CRAFTY_CONTAINER = process.env.CRAFTY_CONTAINER_NAME || 'big-bear-crafty'; // fallback
 
-if (!TOKEN || !APP_ID) { console.error('Manca DISCORD_TOKEN o DISCORD_APP_ID'); process.exit(1); }
+if (!TOKEN) { console.error('Manca DISCORD_TOKEN'); process.exit(1); }
 
-const docker = new Docker({ socketPath: '/var/run/docker.sock' });
-
-// Intents includono MessageContent per i comandi testuali
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// -------- SLASH definition --------
-const cmd = new SlashCommandBuilder()
-  .setName('server')
-  .setDescription('Controlla Crafty')
-  .addSubcommand(s => s.setName('status').setDescription('Mostra lo stato'))
-  .addSubcommand(s => s.setName('on').setDescription('Accende il server'))
-  .addSubcommand(s => s.setName('off').setDescription('Spegne il server'))
-  .addSubcommand(s => s.setName('restart').setDescription('Riavvia il server'))
-  .addSubcommand(s => s.setName('list').setDescription('Elenca i container'));
-
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
-async function registerSlash() {
-  const body = [cmd.toJSON()];
-  if (GUILD_ID) {
-    await rest.put(Routes.applicationGuildCommands(APP_ID, GUILD_ID), { body });
-    console.log('✅ Slash registrati su GUILD:', GUILD_ID);
-  } else {
-    await rest.put(Routes.applicationCommands(APP_ID), { body });
-    console.log('✅ Slash registrati GLOBALI');
-  }
+// ---- Helpers API Crafty ----
+function headers() {
+  // Alcune installazioni usano 'X-Api-Key', altre 'Authorization: Bearer ...'
+  return [
+    { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+    { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' }
+  ];
 }
 
-// -------- helpers Docker --------
-async function getCrafty() {
-  try { const c = docker.getContainer(CRAFTY); await c.inspect(); return c; }
-  catch { return null; }
-}
-async function statusOf(c) {
-  const i = await c.inspect(); const s = i.State || {};
-  return s.Running ? 'running' : (s.Status || 'stopped');
-}
-
-// -------- ready --------
-client.once('ready', async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  try {
-    const list = await docker.listContainers({ all: true });
-    console.log('🧩 Containers:', list.map(x => (x.Names?.[0]||'').replace(/^\//,'')).join(', ') || '(nessuno)');
-    await registerSlash();
-  } catch (e) {
-    console.error('⚠️ Setup error:', e.message || e);
+async function tryRequests(requests) {
+  let lastErr;
+  for (const req of requests) {
+    try {
+      const r = await req();
+      if (r && (r.status >= 200 && r.status < 300 || r.status === 202)) return r;
+    } catch (e) {
+      lastErr = e;
+    }
   }
-});
+  if (lastErr) throw lastErr;
+  throw new Error('Nessuna risposta valida dalle API di Crafty');
+}
 
-// -------- SLASH handler --------
-client.on('interactionCreate', async (i) => {
-  try {
-    if (!i.isChatInputCommand()) return;
-    if (i.commandName !== 'server') return;
+async function craftyPower(action) {
+  if (!CRAFTY_URL || !API_KEY || !SERVER_ID) throw new Error('Config API Crafty mancante (CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID).');
 
-    const sub = i.options.getSubcommand(false);
+  // Prova vari endpoint noti (Crafty v3 e v2)
+  return await tryRequests([
+    // v3: POST /api/v3/servers/{id}/power { action: "start|stop|restart" }
+    () => axios.post(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}/power`, { action }, { headers: headers()[0] }),
+    () => axios.post(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}/power`, { action }, { headers: headers()[1] }),
 
-    if (sub === 'list') {
-      await i.deferReply();
-      const all = await docker.listContainers({ all: true });
-      const rows = all.map(x => `• ${(x.Names?.[0]||'').replace(/^\//,'')} — ${x.State || x.Status || 'unknown'}`);
-      return i.editReply(rows.length ? rows.join('\n') : 'Nessun container trovato.');
-    }
+    // v2: POST /api/v2/servers/{id}/power/{action}
+    () => axios.post(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}/power/${action}`, {}, { headers: headers()[0] }),
+    () => axios.post(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}/power/${action}`, {}, { headers: headers()[1] }),
+  ]);
+}
 
-    const c = await getCrafty();
-    if (!c) return i.reply({ content: `❌ Container **${CRAFTY}** non trovato.`, ephemeral: true });
+async function craftyStatus() {
+  if (!CRAFTY_URL || !API_KEY || !SERVER_ID) throw new Error('Config API Crafty mancante (CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID).');
 
-    if (sub === 'status') {
-      const st = await statusOf(c);
-      return i.reply(`ℹ️ **${CRAFTY}**: **${st}**`);
-    }
-    if (sub === 'on') {
-      const st = await statusOf(c);
-      if (st === 'running') return i.reply('✅ Server già acceso.');
-      await i.deferReply(); await c.start(); return i.editReply('🚀 Server acceso.');
-    }
-    if (sub === 'off') {
-      const st = await statusOf(c);
-      if (st !== 'running') return i.reply('✅ Server già spento.');
-      await i.deferReply(); await c.stop({ t: 30 }); return i.editReply('⏹️ Server spento.');
-    }
-    if (sub === 'restart') {
-      await i.deferReply(); await c.restart({ t: 30 }); return i.editReply('🔄 Server riavviato.');
-    }
+  const res = await tryRequests([
+    // v3: GET /api/v3/servers/{id}
+    () => axios.get(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}`, { headers: headers()[0] }),
+    () => axios.get(`${CRAFTY_URL}/api/v3/servers/${SERVER_ID}`, { headers: headers()[1] }),
 
-    return i.reply({ content: 'Comando non riconosciuto (sub).', ephemeral: true });
-  } catch (e) {
-    console.error('❌ slash error:', e);
-    if (i.deferred || i.replied) return i.editReply(`Errore: \`${e.message || e}\``);
-    return i.reply({ content: `Errore: \`${e.message || e}\``, ephemeral: true });
-  }
-});
+    // v2: GET /api/v2/servers/{id}
+    () => axios.get(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}`, { headers: headers()[0] }),
+    () => axios.get(`${CRAFTY_URL}/api/v2/servers/${SERVER_ID}`, { headers: headers()[1] }),
+  ]);
 
-// -------- TESTO handler --------
+  // Prova a dedurre lo stato dai campi comuni
+  const data = res.data || {};
+  const st = data.state || data.status || data.power || data.running;
+  if (typeof st === 'boolean') return st ? 'running' : 'stopped';
+  if (typeof st === 'string') return st;
+  // fallback: alcuni payload annidano info in data.server/state
+  const nested = data.server?.state || data.server?.status;
+  return nested || 'unknown';
+}
+
+// ---- Fallback: controlla il container (se proprio serve)
+const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+async function containerPower(action) {
+  const c = docker.getContainer(CRAFTY_CONTAINER);
+  await c.inspect();
+  if (action === 'start') return c.start();
+  if (action === 'stop')  return c.stop({ t: 30 });
+  if (action === 'restart') return c.restart({ t: 30 });
+  throw new Error('Azione non valida');
+}
+
+// ---- Bot: comandi testuali ----
 client.on('messageCreate', async (m) => {
   try {
     if (m.author.bot) return;
     const t = m.content.trim().toLowerCase();
-
     if (!t.startsWith('!server')) return;
 
-    if (t === '!server list') {
-      const all = await docker.listContainers({ all: true });
-      const rows = all.map(x => `• ${(x.Names?.[0]||'').replace(/^\//,'')} — ${x.State || x.Status || 'unknown'}`);
-      return m.channel.send(rows.length ? rows.join('\n') : 'Nessun container trovato.');
-    }
-
-    const c = await getCrafty();
-    if (!c) return m.channel.send(`❌ Container **${CRAFTY}** non trovato.`);
-
     if (t === '!server status') {
-      const st = await statusOf(c);
-      return m.channel.send(`ℹ️ **${CRAFTY}**: **${st}**`);
-    }
-    if (t === '!server on') {
-      const st = await statusOf(c);
-      if (st === 'running') return m.channel.send('✅ Server già acceso.');
-      await c.start(); return m.channel.send('🚀 Server acceso.');
-    }
-    if (t === '!server off') {
-      const st = await statusOf(c);
-      if (st !== 'running') return m.channel.send('✅ Server già spento.');
-      await c.stop({ t: 30 }); return m.channel.send('⏹️ Server spento.');
-    }
-    if (t === '!server restart') {
-      await c.restart({ t: 30 }); return m.channel.send('🔄 Server riavviato.');
+      try {
+        const st = await craftyStatus();
+        return void m.channel.send(`ℹ️ Stato server Crafty: **${st}**`);
+      } catch (e) {
+        return void m.channel.send(`⚠️ API Crafty non configurate/rispondono. Dettaglio: \`${e.message}\``);
+      }
     }
 
-    return m.channel.send('Comando non riconosciuto.');
+    if (t === '!server on' || t === '!server off' || t === '!server restart') {
+      const map = { on: 'start', off: 'stop', restart: 'restart' };
+      const action = map[t.split(' ').pop()];
+      try {
+        await craftyPower(action);
+        return void m.channel.send(action === 'start' ? '🚀 Avvio richiesto.' :
+                                   action === 'stop' ?  '⏹️ Arresto richiesto.' :
+                                                        '🔄 Riavvio richiesto.');
+      } catch (e) {
+        // fallback al container se API non vanno
+        try {
+          await containerPower(action);
+          return void m.channel.send(`(fallback container) Azione ${action} inviata al container Crafty.`);
+        } catch (e2) {
+          return void m.channel.send(`❌ Errore: \`${e.message}\``);
+        }
+      }
+    }
+
+    if (t === '!server help') {
+      return void m.channel.send('Comandi: `!server status | on | off | restart`');
+    }
+
   } catch (e) {
-    console.error('❌ text error:', e);
+    console.error('msg error:', e);
     return m.channel.send(`Errore: \`${e.message || e}\``);
   }
+});
+
+client.once('ready', () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`CRAFTY_URL=${CRAFTY_URL || '(manca)'}, SERVER_ID=${SERVER_ID || '(manca)'}`);
 });
 
 client.login(TOKEN);
