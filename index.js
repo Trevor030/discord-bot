@@ -1,180 +1,154 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
-const { wrapper } = require('axios-cookiejar-support');
-const { CookieJar, Cookie } = require('tough-cookie');
 
-// ========= ENV =========
 const TOKEN     = process.env.DISCORD_TOKEN;
 const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/, ''); // es: https://IP:8443/panel
-const USERNAME  = process.env.CRAFTY_USERNAME || '';
-const PASSWORD  = process.env.CRAFTY_PASSWORD || '';
+const API_KEY   = process.env.CRAFTY_API_KEY || '';
 const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
 const INSECURE  = process.env.CRAFTY_INSECURE === '1';
 
 if (!TOKEN) { console.error('❌ Manca DISCORD_TOKEN'); process.exit(1); }
 if (!BASE)  { console.error('❌ Manca CRAFTY_URL'); process.exit(1); }
+if (!API_KEY) { console.error('❌ Manca CRAFTY_API_KEY'); process.exit(1); }
+if (!SERVER_ID) { console.error('❌ Manca CRAFTY_SERVER_ID'); process.exit(1); }
 
-// Se INSECURE=1, ignora certificati self-signed
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = INSECURE ? '0' : '1';
 
-// ========= Discord client =========
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
-// ========= Axios con cookie support =========
-const jar = new CookieJar();
-const AX = wrapper(axios.create({
+// Prepara varie forme di autenticazione (alcune build vogliono Bearer <TOKEN> ottenuto da "Get A Token")
+const HEADERS_VARIANTS = [
+  { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
+  { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
+  { 'Authorization': `Token ${API_KEY}`, 'Content-Type': 'application/json' },
+  { 'Authorization': `Api-Key ${API_KEY}`, 'Content-Type': 'application/json' },
+];
+
+const AX = axios.create({
   baseURL: BASE,
-  timeout: 12000,
-  withCredentials: true,
-  jar,
+  timeout: 15000,
   validateStatus: s => s >= 200 && s < 400
-}));
+});
 
-let csrfToken = '';
-let bearerSet = false;
-
-function isHTML(r) {
-  const ct = r.headers?.['content-type'] || '';
-  return ct.includes('text/html') || (typeof r.data === 'string' && r.data.trim().startsWith('<!DOCTYPE'));
-}
-
-async function setTokenCookieIfMissing(tok) {
-  const url = new URL(BASE);
-  const cookies = await jar.getCookies(BASE);
-  const hasToken = cookies.some(c => c.key === 'token');
-  if (!hasToken && tok) {
-    await jar.setCookie(new Cookie({ key: 'token', value: tok, domain: url.hostname, path: '/' }), BASE);
-  }
-}
-
-async function extractCsrfFromCookies() {
-  const cookies = await jar.getCookies(BASE);
-  const c1 = cookies.find(c => c.key.toLowerCase().includes('gorilla') && c.key.toLowerCase().includes('csrf'));
-  if (c1) csrfToken = c1.value;
-}
-
-async function login() {
-  if (!USERNAME || !PASSWORD) throw new Error('CRAFTY_USERNAME/CRAFTY_PASSWORD mancanti');
-  const payload = { username: USERNAME, password: PASSWORD };
-  const paths = [
-    '/api/v3/auth/login',
-    '/api/auth/login',
-    '/api/login',
-    '/panel/api/v3/auth/login',
-    '/panel/api/auth/login',
-    '/panel/api/login'
-  ];
+async function tryMany(reqBuilders, label) {
   let last;
-  for (const p of paths) {
+  for (const build of reqBuilders) {
+    const { method, url, data, headers } = build();
     try {
-      const r = await AX.post(p, payload);
-      if (isHTML(r)) { last = new Error(`HTML @ ${p}`); continue; }
-      const tok = r.data?.token || r.data?.access_token || r.data?.jwt || r.data?.data?.token;
-      await setTokenCookieIfMissing(tok);
-      try { await AX.get('/'); } catch {}
-      await extractCsrfFromCookies();
-      console.log(`🔐 Login OK via ${p} | CSRF=${csrfToken ? 'ok' : 'none'}`);
-      return;
+      const r = await AX.request({ method, url, data, headers });
+      if (r.status >= 200 && r.status < 300) {
+        console.log(`✔️ ${label}: ${method.toUpperCase()} ${url} [ok with ${Object.keys(headers)[0]}]`);
+        return r;
+      }
+      last = new Error(`HTTP ${r.status} @ ${url}`);
     } catch (e) { last = e; }
   }
-  throw last || new Error('Login fallito');
+  throw last || new Error(`${label}: nessuna risposta valida`);
 }
 
-function authHeaders() {
-  const h = { 'Content-Type': 'application/json' };
-  if (csrfToken) h['X-CSRF-Token'] = csrfToken;
-  return h;
+// piccoli helper
+const listPaths   = ['/panel/api/v3/servers','/panel/api/v2/servers','/api/v3/servers','/api/v2/servers','/api/servers'];
+const statusPaths = id => [`/panel/api/v3/servers/${id}`,`/panel/api/v2/servers/${id}`,`/api/v3/servers/${id}`,`/api/v2/servers/${id}`,`/api/servers/${id}`];
+const powerBuilders = (id, action) => [
+  () => ({ method:'post', url:`/panel/api/v3/servers/${id}/power`, data:{ action } }),
+  () => ({ method:'post', url:`/api/v3/servers/${id}/power`, data:{ action } }),
+  () => ({ method:'post', url:`/panel/api/v2/servers/${id}/power/${action}` }),
+  () => ({ method:'post', url:`/api/v2/servers/${id}/power/${action}` }),
+  () => ({ method:'post', url:`/panel/api/servers/${id}/power/${action}` }),
+  () => ({ method:'post', url:`/api/servers/${id}/power/${action}` }),
+];
+
+// alcune build accettano anche la chiave come query ?key=
+function withKeyQuery(url) {
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}key=${encodeURIComponent(API_KEY)}`;
 }
 
-async function req(method, url, data) {
-  const h = authHeaders();
-  const r = await AX.request({ method, url, data, headers: h });
-  if (isHTML(r)) throw new Error('HTML/login page');
-  if (r.status >= 200 && r.status < 300) return r;
-  throw new Error(`HTTP ${r.status}`);
-}
+async function listServers() {
+  const reqs = [];
 
-// ========= API paths =========
-const listPaths   = [
-  '/api/v3/servers','/api/v2/servers','/api/servers',
-  '/panel/api/v3/servers','/panel/api/v2/servers','/panel/api/servers'
-];
-const statusPaths = id => [
-  `/api/v3/servers/${id}`, `/api/v2/servers/${id}`, `/api/servers/${id}`,
-  `/panel/api/v3/servers/${id}`, `/panel/api/v2/servers/${id}`, `/panel/api/servers/${id}`
-];
-const powerVariants = (id, action) => [
-  { m:'post', u:`/api/v3/servers/${id}/power`, d:{action} },
-  { m:'post', u:`/panel/api/v3/servers/${id}/power`, d:{action} },
-  { m:'post', u:`/api/v2/servers/${id}/power/${action}` },
-  { m:'post', u:`/panel/api/v2/servers/${id}/power/${action}` },
-  { m:'post', u:`/api/servers/${id}/power/${action}` },
-  { m:'post', u:`/panel/api/servers/${id}/power/${action}` }
-];
-
-// ========= API wrappers =========
-async function getServers() {
-  let last;
+  // prova headers vari + path vari
   for (const p of listPaths) {
-    try { const r = await req('get', p); console.log('✔️ LIST', p); return r.data; }
-    catch (e) { last = e; }
+    for (const H of HEADERS_VARIANTS) {
+      reqs.push(() => ({ method:'get', url:p, headers:H }));
+    }
+    // prova anche la variante con ?key=
+    reqs.push(() => ({ method:'get', url: withKeyQuery(p), headers:{ 'Content-Type':'application/json' } }));
   }
-  throw last || new Error('LIST fallita');
+  const res = await tryMany(reqs, 'LIST');
+  return res.data;
 }
 
 async function getStatus(id) {
-  let last;
+  const reqs = [];
   for (const p of statusPaths(id)) {
-    try {
-      const r = await req('get', p);
-      console.log('✔️ STATUS', p);
-      const d = r.data || {};
-      const cands = [d.state,d.status,d.power,d.running,d.online,d?.server?.state,d?.server?.status,d?.data?.state,d?.data?.status,d?.result?.status];
-      for (const v of cands) {
-        if (v === true)  return 'running';
-        if (v === false) return 'stopped';
-        if (typeof v === 'string') return v.toLowerCase();
-      }
-      if (typeof d?.result?.running === 'boolean') return d.result.running ? 'running' : 'stopped';
-      return 'unknown';
-    } catch (e) { last = e; }
+    for (const H of HEADERS_VARIANTS) reqs.push(() => ({ method:'get', url:p, headers:H }));
+    reqs.push(() => ({ method:'get', url: withKeyQuery(p), headers:{ 'Content-Type':'application/json' } }));
   }
-  throw last || new Error('STATUS fallita');
+  const res = await tryMany(reqs, 'STATUS');
+  const d = res.data || {};
+  const c = [d.state,d.status,d.power,d.running,d.online,d?.server?.state,d?.server?.status,d?.data?.state,d?.data?.status,d?.result?.status];
+  for (const v of c) {
+    if (v === true)  return 'running';
+    if (v === false) return 'stopped';
+    if (typeof v === 'string') return v.toLowerCase();
+  }
+  if (typeof d?.result?.running === 'boolean') return d.result.running ? 'running' : 'stopped';
+  return 'unknown';
 }
 
 async function power(id, action) {
-  let last;
-  for (const v of powerVariants(id, action)) {
-    try { await req(v.m, v.u, v.d); console.log(`✔️ POWER ${action}`, v.u); return; }
-    catch (e) { last = e; }
+  const reqs = [];
+  for (const b of powerBuilders(id, action)) {
+    for (const H of HEADERS_VARIANTS) {
+      const built = b();
+      reqs.push(() => ({ ...built, headers:H }));
+    }
+    // variante con ?key=
+    const built = b();
+    reqs.push(() => ({ method: built.method || 'post', url: withKeyQuery(built.url), data: built.data, headers:{ 'Content-Type':'application/json' } }));
   }
-  throw last || new Error(`POWER ${action} fallita`);
+  await tryMany(reqs, `POWER:${action}`);
 }
 
-// ========= Bot commands =========
+// comando diagnostico utile
+async function whoami() {
+  const paths = ['/panel/api/v3/whoami','/api/v3/whoami','/panel/api/whoami','/api/whoami'];
+  const reqs = [];
+  for (const p of paths) {
+    for (const H of HEADERS_VARIANTS) reqs.push(() => ({ method:'get', url:p, headers:H }));
+    reqs.push(() => ({ method:'get', url:withKeyQuery(p), headers:{ 'Content-Type':'application/json' } }));
+  }
+  try {
+    const r = await tryMany(reqs, 'WHOAMI');
+    return r.data;
+  } catch (e) { return { error: String(e.message || e) }; }
+}
+
 client.on('messageCreate', async (m) => {
   if (m.author.bot) return;
   const t = m.content.trim().toLowerCase();
 
   if (t === '!server debug') {
     try {
-      await login();
-      const data = await getServers();
-      return void m.channel.send('✅ API ok. /servers:\n```json\n' + JSON.stringify(data, null, 2).slice(0, 1800) + '\n```');
+      const me = await whoami();
+      const data = await listServers();
+      return m.channel.send('✅ API ok.\n**whoami:**```json\n' + JSON.stringify(me, null, 2).slice(0, 800) + '```\n**servers:**```json\n' + JSON.stringify(data, null, 2).slice(0, 800) + '```');
     } catch (e) {
-      return void m.channel.send(`❌ API errore: \`${e.message}\` — base: ${BASE}`);
+      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
+      return m.channel.send(`❌ API errore: \`${msg}\` — base: ${BASE}`);
     }
   }
 
   if (t === '!server status') {
     try {
-      await login();
       const st = await getStatus(SERVER_ID);
-      return void m.channel.send(`ℹ️ Stato server: **${st}**`);
+      return m.channel.send(`ℹ️ Stato server: **${st}**`);
     } catch (e) {
-      return void m.channel.send(`❌ Errore status: \`${e.message}\``);
+      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
+      return m.channel.send(`❌ Errore status: \`${msg}\``);
     }
   }
 
@@ -182,22 +156,22 @@ client.on('messageCreate', async (m) => {
     const map = { on:'start', off:'stop', restart:'restart' };
     const action = map[t.split(' ').pop()];
     try {
-      await login();
       await power(SERVER_ID, action);
-      return void m.channel.send(
+      return m.channel.send(
         action === 'start' ? '🚀 Avvio richiesto.' :
         action === 'stop'  ? '⏹️ Arresto richiesto.' :
                              '🔄 Riavvio richiesto.'
       );
     } catch (e) {
-      return void m.channel.send(`❌ Errore power: \`${e.message}\``);
+      const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
+      return m.channel.send(`❌ Errore power: \`${msg}\``);
     }
   }
 });
 
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`BASE=${BASE} | INSECURE=${INSECURE?1:0} | USER=${USERNAME?'set':'none'} | SERVER_ID=${SERVER_ID||'(manca)'}`);
+  console.log(`BASE=${BASE} | INSECURE=${INSECURE?1:0} | SERVER_ID=${SERVER_ID}`);
 });
 
 client.login(TOKEN);
