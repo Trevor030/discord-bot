@@ -1,18 +1,19 @@
-// Discord bot: slash /server (status/on/off/restart/list) controlling Crafty via Docker
+// Slash /server con debug
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const Docker = require('dockerode');
 
 const TOKEN = process.env.DISCORD_TOKEN;
-const APP_ID = process.env.DISCORD_APP_ID;         // es: 1408...
-const GUILD_ID = process.env.GUILD_ID || null;     // es: 8526... (consigliato per sync immediata)
+const APP_ID = process.env.DISCORD_APP_ID;
+const GUILD_ID = process.env.GUILD_ID || null;
 const CRAFTY_NAME = process.env.CRAFTY_CONTAINER_NAME || 'big-bear-crafty';
 
-if (!TOKEN) { console.error('Missing DISCORD_TOKEN env var'); process.exit(1); }
-if (!APP_ID) { console.error('Missing DISCORD_APP_ID env var'); process.exit(1); }
+if (!TOKEN) { console.error('Missing DISCORD_TOKEN'); process.exit(1); }
+if (!APP_ID) { console.error('Missing DISCORD_APP_ID'); process.exit(1); }
 
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// ---- definizione comandi
 const command = new SlashCommandBuilder()
   .setName('server')
   .setDescription('Controlla il server Crafty')
@@ -22,7 +23,7 @@ const command = new SlashCommandBuilder()
   .addSubcommand(s => s.setName('restart').setDescription('Riavvia il server'))
   .addSubcommand(s => s.setName('list').setDescription('Elenca i container visibili'));
 
-async function registerCommands() {
+async function register() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   const body = [command.toJSON()];
   if (GUILD_ID) {
@@ -30,11 +31,11 @@ async function registerCommands() {
     console.log('✅ Slash registrati su GUILD:', GUILD_ID);
   } else {
     await rest.put(Routes.applicationCommands(APP_ID), { body });
-    console.log('✅ Slash registrati GLOBALI (appariranno tra qualche minuto)');
+    console.log('✅ Slash registrati GLOBALI');
   }
 }
 
-async function getContainer() {
+async function getC() {
   try { const c = docker.getContainer(CRAFTY_NAME); await c.inspect(); return c; }
   catch { return null; }
 }
@@ -46,63 +47,67 @@ async function getStatus(c) {
 
 client.once('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  try {
-    await registerCommands();
-    const list = await docker.listContainers({ all: true });
-    console.log('🧩 Containers visibili:', list.map(x => (x.Names?.[0]||'').replace(/^\//,'')).join(', ') || '(nessuno)');
-  } catch (e) {
-    console.error('⚠️ Setup error:', e.message || e);
-  }
+  await register();
+  const list = await docker.listContainers({ all: true });
+  console.log('🧩 Containers visibili:', list.map(x => (x.Names?.[0]||'').replace(/^\//,'')).join(', ') || '(nessuno)');
 });
 
+// ---- DEBUG + handler
 client.on('interactionCreate', async (i) => {
   try {
     if (!i.isChatInputCommand()) return;
+
+    // LOG DETTAGLI
+    const sub = i.options.getSubcommand(false);
+    console.log('🔔 interaction:', {
+      guild: i.guildId,
+      name: i.commandName,
+      sub: sub,
+      options: i.options._hoistedOptions?.map(o => ({ name: o.name, type: o.type, value: o.value })) || []
+    });
+
     if (i.commandName !== 'server') return;
 
-    const sub = i.options.getSubcommand();
+    // risposta di debug (sempre)
+    await i.deferReply({ ephemeral: false });
+    await i.editReply(`(debug) ricevuto: /server ${sub || '(no-sub)'}`);
 
+    // azioni reali
     if (sub === 'list') {
-      await i.deferReply();
       const all = await docker.listContainers({ all: true });
       const rows = all.map(x => `• ${(x.Names?.[0]||'').replace(/^\//,'')} — ${x.State || x.Status || 'unknown'}`);
-      await i.editReply(rows.length ? rows.join('\n') : 'Nessun container trovato.');
-      return;
+      return void i.followUp(rows.length ? rows.join('\n') : 'Nessun container trovato.');
     }
 
-    const c = await getContainer();
-    if (!c) return i.reply({ content: `❌ Container **${CRAFTY_NAME}** non trovato.`, ephemeral: true });
+    const c = await getC();
+    if (!c) return void i.followUp(`❌ Container **${CRAFTY_NAME}** non trovato.`);
 
     if (sub === 'status') {
       const st = await getStatus(c);
-      return i.reply(`ℹ️ **${CRAFTY_NAME}**: **${st}**`);
+      return void i.followUp(`ℹ️ **${CRAFTY_NAME}**: **${st}**`);
     }
     if (sub === 'on') {
       const st = await getStatus(c);
-      if (st === 'running') return i.reply('✅ Server già acceso.');
-      await i.deferReply();
+      if (st === 'running') return void i.followUp('✅ Server già acceso.');
       await c.start();
-      return i.editReply('🚀 Server acceso.');
+      return void i.followUp('🚀 Server acceso.');
     }
     if (sub === 'off') {
       const st = await getStatus(c);
-      if (st !== 'running') return i.reply('✅ Server già spento.');
-      await i.deferReply();
+      if (st !== 'running') return void i.followUp('✅ Server già spento.');
       await c.stop({ t: 30 });
-      return i.editReply('⏹️ Server spento.');
+      return void i.followUp('⏹️ Server spento.');
     }
     if (sub === 'restart') {
-      await i.deferReply();
       await c.restart({ t: 30 });
-      return i.editReply('🔄 Server riavviato.');
+      return void i.followUp('🔄 Server riavviato.');
     }
 
-    return i.reply({ content: 'Comando non riconosciuto (sub).', ephemeral: true });
+    return void i.followUp('Comando non riconosciuto (sub).');
   } catch (e) {
-    const msg = e?.message || String(e);
-    console.error('❌ Handler error:', msg);
-    if (i.deferred || i.replied) return i.editReply(`Errore: \`${msg}\``);
-    return i.reply({ content: `Errore: \`${msg}\``, ephemeral: true });
+    console.error('❌ handler error:', e);
+    if (i.deferred || i.replied) return i.editReply(`Errore: \`${e.message || e}\``);
+    return i.reply({ content: `Errore: \`${e.message || e}\``, ephemeral: true });
   }
 });
 
