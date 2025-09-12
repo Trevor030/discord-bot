@@ -12,6 +12,9 @@ services:
       - CRAFTY_API_KEY=${CRAFTY_API_KEY}
       - CRAFTY_SERVER_ID=${CRAFTY_SERVER_ID}
       - CRAFTY_INSECURE=${CRAFTY_INSECURE}
+      - CRAFTY_USERNAME=${CRAFTY_USERNAME}
+      - CRAFTY_PASSWORD=${CRAFTY_PASSWORD}
+      
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
