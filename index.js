@@ -4,9 +4,9 @@ const axios = require('axios');
 
 /* ========= ENV ========= */
 const TOKEN     = process.env.DISCORD_TOKEN;
-const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/, ''); // es: https://192.168.1.82:8443  (senza /panel)
-const API_KEY   = process.env.CRAFTY_API_KEY || '';                  // usa token da "Get A Token" o API key
-const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';
+const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/, ''); // es: https://IP:8443  (senza /panel)
+const API_KEY   = process.env.CRAFTY_API_KEY || '';                  // token preso da "Get A Token"
+const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';               // UUID del server
 const INSECURE  = process.env.CRAFTY_INSECURE === '1';
 
 if (!TOKEN)     { console.error('❌ Manca DISCORD_TOKEN'); process.exit(1); }
@@ -14,6 +14,7 @@ if (!BASE)      { console.error('❌ Manca CRAFTY_URL'); process.exit(1); }
 if (!API_KEY)   { console.error('❌ Manca CRAFTY_API_KEY'); process.exit(1); }
 if (!SERVER_ID) { console.error('❌ Manca CRAFTY_SERVER_ID'); process.exit(1); }
 
+// self-signed ok (solo LAN/test)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = INSECURE ? '0' : '1';
 
 /* ========= Discord ========= */
@@ -25,11 +26,11 @@ const client = new Client({
 const AX = axios.create({
   baseURL: BASE,
   timeout: 15000,
-  maxRedirects: 0,                  // ⬅️ non seguire redirect (login)
+  maxRedirects: 0,                  // non seguire redirect verso /login
   validateStatus: s => s >= 200 && s < 300
 });
 
-// Varianti auth accettate da diverse build
+// Varianti auth accettate da build diverse
 const HEADERS_VARIANTS = [
   { 'X-Api-Key': API_KEY, 'Content-Type': 'application/json' },
   { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
@@ -37,15 +38,12 @@ const HEADERS_VARIANTS = [
   { 'Authorization': `Api-Key ${API_KEY}`, 'Content-Type': 'application/json' },
 ];
 
-function withKeyQuery(url) {
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}key=${encodeURIComponent(API_KEY)}`;
-}
-
-function looksHtml(data, headers) {
+// helper
+const looksHtml = (data, headers) => {
   const ct = headers?.['content-type'] || headers?.['Content-Type'] || '';
   return (typeof data === 'string' && data.trim().startsWith('<!DOCTYPE')) || ct.includes('text/html');
-}
+};
+const withKeyQuery = (url) => `${url}${url.includes('?') ? '&' : '?'}key=${encodeURIComponent(API_KEY)}`;
 
 async function tryMany(reqBuilders, label) {
   let last;
@@ -55,7 +53,6 @@ async function tryMany(reqBuilders, label) {
       const r = await AX.request({ method, url, data, headers });
       if (r.status >= 300 && r.status < 400) { last = new Error(`REDIRECT ${r.status} @ ${url}`); continue; }
       if (looksHtml(r.data, r.headers))      { last = new Error(`HTML @ ${url}`); continue; }
-
       const tag = headers?.['X-Api-Key'] ? 'X-Api-Key'
                 : (headers?.['Authorization'] ? 'Authorization' : 'headers');
       console.log(`✔️ ${label}: ${method.toUpperCase()} ${url} [ok with ${tag}]`);
@@ -66,26 +63,42 @@ async function tryMany(reqBuilders, label) {
 }
 
 /* ========= Endpoint sets ========= */
-const listPaths   = [
+const listPaths = [
   '/panel/api/v3/servers','/panel/api/v2/servers',
   '/api/v3/servers','/api/v2/servers','/api/servers'
 ];
+
+// 🔝 prova prima /state e /stats, poi i dettagli
 const statusPaths = id => [
-  `/panel/api/v3/servers/${id}`, `/panel/api/v2/servers/${id}`,
-  `/api/v3/servers/${id}`, `/api/v2/servers/${id}`, `/api/servers/${id}`,
-  `/panel/api/v3/servers/${id}/state`,  `/api/v3/servers/${id}/state`,
-  `/panel/api/v2/servers/${id}/state`,  `/api/v2/servers/${id}/state`,
-  `/panel/api/v3/servers/${id}/stats`,  `/api/v3/servers/${id}/stats`,
-  `/panel/api/v2/servers/${id}/stats`,  `/api/v2/servers/${id}/stats`
+  // STATO dedicato
+  `/panel/api/v3/servers/${id}/state`,
+  `/api/v3/servers/${id}/state`,
+  `/panel/api/v2/servers/${id}/state`,
+  `/api/v2/servers/${id}/state`,
+  `/panel/api/v3/servers/${id}/stats`,
+  `/api/v3/servers/${id}/stats`,
+  `/panel/api/v2/servers/${id}/stats`,
+  `/api/v2/servers/${id}/stats`,
+  // fallback: dettagli (spesso non contengono lo stato)
+  `/panel/api/v3/servers/${id}`,
+  `/panel/api/v2/servers/${id}`,
+  `/api/v3/servers/${id}`,
+  `/api/v2/servers/${id}`,
+  `/api/servers/${id}`,
 ];
+
 const powerBuilders = (id, action) => [
+  // v3 JSON body
   () => ({ method:'post', url:`/panel/api/v3/servers/${id}/power`, data:{ action } }),
   () => ({ method:'post', url:`/api/v3/servers/${id}/power`,       data:{ action } }),
+  // v2 style (no body)
   () => ({ method:'post', url:`/panel/api/v2/servers/${id}/power/${action}` }),
   () => ({ method:'post', url:`/api/v2/servers/${id}/power/${action}` }),
+  // generic
   () => ({ method:'post', url:`/panel/api/servers/${id}/power/${action}` }),
   () => ({ method:'post', url:`/api/servers/${id}/power/${action}` }),
 ];
+
 const commandBuilders = (id, command) => [
   () => ({ method:'post', url:`/panel/api/v3/servers/${id}/command`, data:{ command } }),
   () => ({ method:'post', url:`/api/v3/servers/${id}/command`,       data:{ command } }),
@@ -106,19 +119,19 @@ async function listServers() {
   return res.data;
 }
 
+// Parser stato: guarda prima dentro d.data, poi d/result
 function parseStatusPayload(d) {
+  const dd = (d && typeof d === 'object' && d.data && typeof d.data === 'object') ? d.data : d;
   const candidates = [
-    d?.state, d?.status, d?.power, d?.running, d?.online,
-    d?.server?.state, d?.server?.status, d?.server?.running, d?.server?.online,
-    d?.data?.state, d?.data?.status, d?.data?.running, d?.data?.online,
-    d?.result?.status, d?.result?.state, d?.result?.running,
-    d?.server_state, d?.power_state, d?.current_state, d?.is_online
+    dd?.running, dd?.online, dd?.state, dd?.status, dd?.power,
+    dd?.server_state, dd?.power_state, dd?.current_state, dd?.is_online,
+    d?.result?.running, d?.result?.status, d?.result?.state
   ];
   for (const v of candidates) {
     if (v === true)  return 'running';
     if (v === false) return 'stopped';
-    if (typeof v === 'string') return v.toLowerCase();
     if (typeof v === 'number') return v ? 'running' : 'stopped';
+    if (typeof v === 'string') return v.toLowerCase();
   }
   return 'unknown';
 }
@@ -204,7 +217,7 @@ client.on('messageCreate', async (m) => {
   if (t.toLowerCase() === '!server rawstatus') {
     try {
       const { raw, path } = await getStatus(SERVER_ID);
-      return m.channel.send(`📦 Raw dallo status (${path || 'n/d'}):\n\`\`\`json\n${JSON.stringify(raw, null, 2).slice(0, 1800)}\n\`\`\``);
+      return m.channel.send(`📦 Raw dallo stato (${path || 'n/d'}):\n\`\`\`json\n${JSON.stringify(raw, null, 2).slice(0, 1800)}\n\`\`\``);
     } catch (e) {
       const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
       return m.channel.send(`❌ Errore rawstatus: \`${msg}\``);
@@ -228,13 +241,12 @@ client.on('messageCreate', async (m) => {
       if (action === 'stop' || action === 'restart') {
         try {
           await sendConsoleCommand(SERVER_ID, action === 'stop' ? 'stop' : 'restart');
-          return m.channel.send(`📝 Fallback console: inviato \`${action}\`.`);
+          return m.channel.send(`📝 Fallback console: inviato \`${action === 'stop' ? 'stop' : 'restart'}\`.`);
         } catch (e2) {
           const msg = e2.response?.status ? `HTTP ${e2.response.status}` : (e2.code || e2.message);
           return m.channel.send(`❌ Errore power e fallback console: \`${msg}\``);
         }
       }
-
       if (action === 'start') {
         return m.channel.send('❌ Avvio non consentito via console. Serve che l’API accetti **Server Start**.');
       }
