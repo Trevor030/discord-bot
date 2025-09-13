@@ -25,7 +25,8 @@ const client = new Client({
 const AX = axios.create({
   baseURL: BASE,
   timeout: 15000,
-  validateStatus: s => s >= 200 && s < 400
+  maxRedirects: 0,                  // ⬅️ non seguire redirect (login)
+  validateStatus: s => s >= 200 && s < 300
 });
 
 // Varianti auth accettate da diverse build
@@ -41,19 +42,24 @@ function withKeyQuery(url) {
   return `${url}${sep}key=${encodeURIComponent(API_KEY)}`;
 }
 
+function looksHtml(data, headers) {
+  const ct = headers?.['content-type'] || headers?.['Content-Type'] || '';
+  return (typeof data === 'string' && data.trim().startsWith('<!DOCTYPE')) || ct.includes('text/html');
+}
+
 async function tryMany(reqBuilders, label) {
   let last;
   for (const build of reqBuilders) {
     const { method, url, data, headers } = build();
     try {
       const r = await AX.request({ method, url, data, headers });
-      if (r.status >= 200 && r.status < 300) {
-        const tag = headers?.['X-Api-Key'] ? 'X-Api-Key'
-                  : (headers?.['Authorization'] ? 'Authorization' : 'headers');
-        console.log(`✔️ ${label}: ${method.toUpperCase()} ${url} [ok with ${tag}]`);
-        return r;
-      }
-      last = new Error(`HTTP ${r.status} @ ${url}`);
+      if (r.status >= 300 && r.status < 400) { last = new Error(`REDIRECT ${r.status} @ ${url}`); continue; }
+      if (looksHtml(r.data, r.headers))      { last = new Error(`HTML @ ${url}`); continue; }
+
+      const tag = headers?.['X-Api-Key'] ? 'X-Api-Key'
+                : (headers?.['Authorization'] ? 'Authorization' : 'headers');
+      console.log(`✔️ ${label}: ${method.toUpperCase()} ${url} [ok with ${tag}]`);
+      return r;
     } catch (e) { last = e; }
   }
   throw last || new Error(`${label}: nessuna risposta valida`);
@@ -65,28 +71,21 @@ const listPaths   = [
   '/api/v3/servers','/api/v2/servers','/api/servers'
 ];
 const statusPaths = id => [
-  // dettagli server
   `/panel/api/v3/servers/${id}`, `/panel/api/v2/servers/${id}`,
   `/api/v3/servers/${id}`, `/api/v2/servers/${id}`, `/api/servers/${id}`,
-  // endpoint di stato dedicati (alcune build)
   `/panel/api/v3/servers/${id}/state`,  `/api/v3/servers/${id}/state`,
   `/panel/api/v2/servers/${id}/state`,  `/api/v2/servers/${id}/state`,
   `/panel/api/v3/servers/${id}/stats`,  `/api/v3/servers/${id}/stats`,
   `/panel/api/v2/servers/${id}/stats`,  `/api/v2/servers/${id}/stats`
 ];
 const powerBuilders = (id, action) => [
-  // v3 JSON body
   () => ({ method:'post', url:`/panel/api/v3/servers/${id}/power`, data:{ action } }),
   () => ({ method:'post', url:`/api/v3/servers/${id}/power`,       data:{ action } }),
-  // v2 style (no body)
   () => ({ method:'post', url:`/panel/api/v2/servers/${id}/power/${action}` }),
   () => ({ method:'post', url:`/api/v2/servers/${id}/power/${action}` }),
-  // generic
   () => ({ method:'post', url:`/panel/api/servers/${id}/power/${action}` }),
   () => ({ method:'post', url:`/api/servers/${id}/power/${action}` }),
 ];
-
-// console command (per fallback stop/restart)
 const commandBuilders = (id, command) => [
   () => ({ method:'post', url:`/panel/api/v3/servers/${id}/command`, data:{ command } }),
   () => ({ method:'post', url:`/api/v3/servers/${id}/command`,       data:{ command } }),
@@ -216,7 +215,6 @@ client.on('messageCreate', async (m) => {
     const map = { on:'start', off:'stop', restart:'restart' };
     const action = map[t.toLowerCase().split(' ').pop()];
     try {
-      // 1) tenta API power
       await power(SERVER_ID, action);
       return m.channel.send(
         action === 'start' ? '🚀 Avvio richiesto.' :
@@ -227,11 +225,10 @@ client.on('messageCreate', async (m) => {
       const code = e.response?.status || e.code || e.message || 'errore';
       console.log(`⚠️ POWER ${action} fallito:`, code);
 
-      // 2) Fallback via console per stop/restart
       if (action === 'stop' || action === 'restart') {
         try {
           await sendConsoleCommand(SERVER_ID, action === 'stop' ? 'stop' : 'restart');
-          return m.channel.send(`📝 Fallback console: inviato \`${action === 'stop' ? 'stop' : 'restart'}\`.`);
+          return m.channel.send(`📝 Fallback console: inviato \`${action}\`.`);
         } catch (e2) {
           const msg = e2.response?.status ? `HTTP ${e2.response.status}` : (e2.code || e2.message);
           return m.channel.send(`❌ Errore power e fallback console: \`${msg}\``);
@@ -239,7 +236,6 @@ client.on('messageCreate', async (m) => {
       }
 
       if (action === 'start') {
-        // l'avvio via console non è possibile se il server è spento
         return m.channel.send('❌ Avvio non consentito via console. Serve che l’API accetti **Server Start**.');
       }
     }
