@@ -1,11 +1,11 @@
-// Discord bot → Crafty API (API Key) + fallback console + debug esteso
+// Discord bot → Crafty API (API Key) + fallback console + debug esteso + permscheck
 const { Client, GatewayIntentBits } = require('discord.js');
 const axios = require('axios');
 
 /* ========= ENV ========= */
 const TOKEN     = process.env.DISCORD_TOKEN;
 const BASE      = (process.env.CRAFTY_URL || '').replace(/\/+$/, ''); // es: https://IP:8443  (senza /panel)
-const API_KEY   = process.env.CRAFTY_API_KEY || '';                  // token preso da "Get A Token"
+const API_KEY   = process.env.CRAFTY_API_KEY || '';                  // token da "Get A Token" (JWT) o API key accettata
 const SERVER_ID = process.env.CRAFTY_SERVER_ID || '';               // UUID del server
 const INSECURE  = process.env.CRAFTY_INSECURE === '1';
 
@@ -70,7 +70,6 @@ const listPaths = [
 
 // 🔝 prova prima /state e /stats, poi i dettagli
 const statusPaths = id => [
-  // STATO dedicato
   `/panel/api/v3/servers/${id}/state`,
   `/api/v3/servers/${id}/state`,
   `/panel/api/v2/servers/${id}/state`,
@@ -79,7 +78,6 @@ const statusPaths = id => [
   `/api/v3/servers/${id}/stats`,
   `/panel/api/v2/servers/${id}/stats`,
   `/api/v2/servers/${id}/stats`,
-  // fallback: dettagli (spesso non contengono lo stato)
   `/panel/api/v3/servers/${id}`,
   `/panel/api/v2/servers/${id}`,
   `/api/v3/servers/${id}`,
@@ -88,13 +86,10 @@ const statusPaths = id => [
 ];
 
 const powerBuilders = (id, action) => [
-  // v3 JSON body
   () => ({ method:'post', url:`/panel/api/v3/servers/${id}/power`, data:{ action } }),
   () => ({ method:'post', url:`/api/v3/servers/${id}/power`,       data:{ action } }),
-  // v2 style (no body)
   () => ({ method:'post', url:`/panel/api/v2/servers/${id}/power/${action}` }),
   () => ({ method:'post', url:`/api/v2/servers/${id}/power/${action}` }),
-  // generic
   () => ({ method:'post', url:`/panel/api/servers/${id}/power/${action}` }),
   () => ({ method:'post', url:`/api/servers/${id}/power/${action}` }),
 ];
@@ -222,6 +217,20 @@ client.on('messageCreate', async (m) => {
       const msg = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
       return m.channel.send(`❌ Errore rawstatus: \`${msg}\``);
     }
+  }
+
+  // ====== Permscheck rapido ======
+  if (t.toLowerCase() === '!server permscheck') {
+    const results = [];
+    async function tryOne(label, fn) {
+      try { await fn(); results.push(`${label}: OK`); }
+      catch (e) { results.push(`${label}: ${e.response?.status ? 'HTTP '+e.response.status : (e.code || e.message)}`); }
+    }
+    await tryOne('POWER start',   () => power(SERVER_ID, 'start'));
+    await tryOne('POWER stop',    () => power(SERVER_ID, 'stop'));
+    await tryOne('POWER restart', () => power(SERVER_ID, 'restart'));
+    await tryOne('CONSOLE say',   () => sendConsoleCommand(SERVER_ID, 'say permscheck'));
+    return m.channel.send('🔎 Permscheck:\n```\n' + results.join('\n') + '\n```');
   }
 
   if (['!server on','!server off','!server restart'].includes(t.toLowerCase())) {
