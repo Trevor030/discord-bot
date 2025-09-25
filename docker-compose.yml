@@ -3,7 +3,7 @@ services:
   discord-bot:
     build: .
     environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJpYXQiOjE3NTg4MDU3ODgsInRva2VuX2lkIjoxfQ.Wg6kO1z1T6VKYucCmaFvOmrfPD3xYfdncN0RkM8PUsE
       - CRAFTY_URL=${CRAFTY_URL}
       - CRAFTY_INSECURE=${CRAFTY_INSECURE:-1}     # 1 = accetta certificato self-signed
       - CRAFTY_USER=${CRAFTY_USER}
