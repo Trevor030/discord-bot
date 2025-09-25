@@ -42,7 +42,7 @@ client.on("messageCreate", async (m) => {
   try {
     if (cmd === "status") {
       const st = await containerStatus();
-      return m.reply(`📊 Stato Server ${CONTAINER_NAME}: **${st}**`);
+      return m.reply(`📊 Stato Server: **${st}**`);
     }
     if (cmd === "on") {
       const c = await getContainer();
