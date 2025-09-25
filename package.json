@@ -5,6 +5,7 @@
   "scripts": { "start": "node index.js" },
   "dependencies": {
     "discord.js": "^14.15.3",
-    "dockerode": "^4.0.2"
+    "dockerode": "^4.0.2",
+    "axios": "^1.7.2"
   }
 }
