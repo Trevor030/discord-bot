@@ -1,85 +1,159 @@
+// index.js — Crafty via API KEY (robusto: v3+v2, X-Api-Key+Bearer+?key=)
 const { Client, GatewayIntentBits } = require("discord.js");
 const axios = require("axios");
 const https = require("https");
 
-// ===== ENV =====
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const DISCORD_APP_ID = process.env.DISCORD_APP_ID;
-const GUILD_ID = process.env.GUILD_ID;
-
-const CRAFTY_URL = process.env.CRAFTY_URL;
-const CRAFTY_API_KEY = (process.env.CRAFTY_API_KEY || "").trim();
+const DISCORD_TOKEN    = process.env.DISCORD_TOKEN;
+const CRAFTY_URL       = (process.env.CRAFTY_URL || "").replace(/\/+$/,"");
+const CRAFTY_API_KEY   = (process.env.CRAFTY_API_KEY || "").trim();
 const CRAFTY_SERVER_ID = process.env.CRAFTY_SERVER_ID;
-const CRAFTY_INSECURE = process.env.CRAFTY_INSECURE === "1";
+const CRAFTY_INSECURE  = process.env.CRAFTY_INSECURE === "1";
 
 if (!DISCORD_TOKEN || !CRAFTY_URL || !CRAFTY_API_KEY || !CRAFTY_SERVER_ID) {
   throw new Error("❌ Mancano variabili ambiente: DISCORD_TOKEN, CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID");
 }
 
-// ===== LOG STARTUP =====
-console.log("BASE=" + CRAFTY_URL,
-  "| SERVER_ID=" + CRAFTY_SERVER_ID,
-  "| API_KEY present:", CRAFTY_API_KEY.length > 10);
-
-// ===== Axios client =====
+if (CRAFTY_INSECURE) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const httpsAgent = new https.Agent({ rejectUnauthorized: !CRAFTY_INSECURE });
-const api = axios.create({
-  baseURL: CRAFTY_URL,
-  httpsAgent,
-  headers: {
-    "X-Api-Key": CRAFTY_API_KEY
-  }
-});
 
-// ===== Discord Bot =====
+const AUTH_HEADERS = [
+  (k)=>({ "X-Api-Key": k, "Content-Type":"application/json" }),
+  (k)=>({ "Authorization": `Bearer ${k}`, "Content-Type":"application/json" }),
+  (k)=>({ "Authorization": `Token ${k}`, "Content-Type":"application/json" }),
+  (k)=>({ "Authorization": `Api-Key ${k}`, "Content-Type":"application/json" }),
+];
+
+const BASES = ["/panel/api/v3", "/api/v3", "/panel/api/v2", "/api/v2"];
+
+function looksHtml(res){
+  const ct = res.headers?.["content-type"] || "";
+  return (typeof res.data === "string" && res.data.trim().startsWith("<!DOCTYPE")) || ct.includes("text/html");
+}
+
+async function tryAll(method, relUrl, body){
+  // prova v3/v2 + vari header
+  for (const base of BASES) {
+    for (const H of AUTH_HEADERS) {
+      try {
+        const r = await axios({
+          method,
+          url: CRAFTY_URL + base + relUrl,
+          data: body,
+          headers: H(CRAFTY_API_KEY),
+          httpsAgent,
+          maxRedirects: 0,
+          validateStatus: s => s>=200 && s<300
+        });
+        if (looksHtml(r)) throw new Error("HTML/login");
+        return r.data;
+      } catch (_) {
+        // come fallback: stessa URL con ?key=
+        try {
+          const sep = relUrl.includes("?") ? "&" : "?";
+          const r2 = await axios({
+            method,
+            url: CRAFTY_URL + base + relUrl + `${sep}key=${encodeURIComponent(CRAFTY_API_KEY)}`,
+            data: body,
+            headers: { "Content-Type":"application/json" },
+            httpsAgent,
+            maxRedirects: 0,
+            validateStatus: s => s>=200 && s<300
+          });
+          if (looksHtml(r2)) throw new Error("HTML/login");
+          return r2.data;
+        } catch(e2){ /* passa alla prossima variante */ }
+      }
+    }
+  }
+  throw new Error("403");
+}
+
+// ---- API helpers
+async function getStatus() {
+  // prova stats/state su v3/v2
+  const paths = [
+    `/servers/${CRAFTY_SERVER_ID}/stats`,
+    `/servers/${CRAFTY_SERVER_ID}/state`,
+    `/servers/${CRAFTY_SERVER_ID}` // dettaglio come fallback
+  ];
+  for (const p of paths) {
+    try {
+      const d = await tryAll("GET", p);
+      const data = (d && typeof d==="object" && d.data) ? d.data : d;
+      const candidates = [data?.running, data?.online, data?.state, data?.status, data?.power, data?.server_state];
+      for (const v of candidates) {
+        if (v === true) return "running";
+        if (v === false) return "stopped";
+        if (typeof v === "number") return v ? "running" : "stopped";
+        if (typeof v === "string") return v.toLowerCase();
+      }
+      return "unknown";
+    } catch (_) { /* prova prossimo path */ }
+  }
+  throw new Error("403");
+}
+
+async function power(action){
+  // v3: POST /power {action}, v2: POST /power/{action}
+  // proviamo entrambi
+  try { await tryAll("POST", `/servers/${CRAFTY_SERVER_ID}/power`, { action }); return; } catch {}
+  await tryAll("POST", `/servers/${CRAFTY_SERVER_ID}/power/${action}`);
+}
+
+// ---- Discord bot
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  const fp = CRAFTY_API_KEY.length>12 ? `${CRAFTY_API_KEY.slice(0,6)}…${CRAFTY_API_KEY.slice(-6)}` : "(short)";
+  console.log(`BASE=${CRAFTY_URL} | INSECURE=${CRAFTY_INSECURE?1:0} | SERVER_ID=${CRAFTY_SERVER_ID} | APIKEY=${fp}`);
 });
 
-// ===== Commands =====
-client.on("messageCreate", async (msg) => {
-  if (!msg.content.startsWith("!server")) return;
-  const args = msg.content.split(" ").slice(1);
-  const cmd = args[0];
+client.on("messageCreate", async (m) => {
+  if (m.author.bot) return;
+  if (!m.content.startsWith("!server")) return;
+  const [, sub] = m.content.trim().split(/\s+/);
+  const cmd = (sub || "").toLowerCase();
 
   try {
     if (cmd === "status") {
-      const res = await api.get(`/api/v3/servers/${CRAFTY_SERVER_ID}/stats`);
-      msg.reply("Stato server: " + (res.data?.data?.running ? "running" : "stopped"));
+      const st = await getStatus();
+      return m.reply(`Stato server: **${st}**`);
     }
-
-    else if (cmd === "on") {
-      await api.post(`/api/v3/servers/${CRAFTY_SERVER_ID}/power`, { action: "start" });
-      msg.reply("▶️ Avvio server richiesto.");
+    if (cmd === "on") {
+      await power("start");
+      return m.reply("🚀 Avvio richiesto.");
     }
-
-    else if (cmd === "off") {
-      await api.post(`/api/v3/servers/${CRAFTY_SERVER_ID}/power`, { action: "stop" });
-      msg.reply("⏹️ Arresto server richiesto.");
+    if (cmd === "off") {
+      await power("stop");
+      return m.reply("⏹️ Arresto richiesto.");
     }
-
-    else if (cmd === "restart") {
-      await api.post(`/api/v3/servers/${CRAFTY_SERVER_ID}/power`, { action: "restart" });
-      msg.reply("🔄 Riavvio server richiesto.");
+    if (cmd === "restart") {
+      await power("restart");
+      return m.reply("🔄 Riavvio richiesto.");
     }
-
-    else if (cmd === "debug") {
-      const who = await api.get(`/api/v3/whoami`).catch(e => e.response?.status);
-      const servers = await api.get(`/api/v3/servers`).catch(e => e.response?.status);
-      msg.reply("Debug:\nwhoami: " + JSON.stringify(who.data || who) +
-                "\nservers: " + JSON.stringify(servers.data || servers));
+    if (cmd === "permscheck") {
+      const out = [];
+      async function t(label, fn){ try { await fn(); out.push(`${label}: OK`); } catch(e){ out.push(`${label}: 403`);} }
+      await t("POWER start",   () => power("start"));
+      await t("POWER stop",    () => power("stop"));
+      await t("POWER restart", () => power("restart"));
+      return m.reply("🔎 Permscheck:\n```\n" + out.join("\n") + "\n```");
     }
-
-    else {
-      msg.reply("Comandi: !server status | on | off | restart | debug");
+    if (cmd === "debug") {
+      // prova whoami/servers con più varianti
+      let who=null, list=null, errW=null, errL=null;
+      try { who  = await tryAll("GET", "/whoami"); } catch(e){ errW = e.message; }
+      try { list = await tryAll("GET", "/servers"); } catch(e){ errL = e.message; }
+      return m.reply("Debug:\n```json\n" + JSON.stringify({ who: who||errW, servers: list||errL }, null, 2).slice(0,1800) + "\n```");
     }
-  } catch (err) {
-    console.error(err.response?.status, err.response?.data || err.message);
-    msg.reply("❌ Errore: " + (err.response?.status || err.message));
+    // help
+    return m.reply("Comandi: `!server status | on | off | restart | permscheck | debug`");
+  } catch (e) {
+    const code = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
+    return m.reply(`❌ Errore: ${code}`);
   }
 });
 
