@@ -8,6 +8,9 @@ services:
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       CRAFTY_CONTAINER: ${CRAFTY_CONTAINER:-big-bear-crafty}
+      CRAFTY_URL: ${CRAFTY_URL}
+      CRAFTY_API_KEY: ${CRAFTY_API_KEY}
+      CRAFTY_SERVER_ID: ${CRAFTY_SERVER_ID}
+      CRAFTY_INSECURE: ${CRAFTY_INSECURE:-1}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: ["node", "index.js"]
