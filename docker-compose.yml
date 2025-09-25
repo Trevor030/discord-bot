@@ -1,12 +1,17 @@
 version: "3.8"
+
 services:
   discord-bot:
-    build: .
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: ["node", "index.js"]
     environment:
-      - DISCORD_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJpYXQiOjE3NTg4MDU3ODgsInRva2VuX2lkIjoxfQ.Wg6kO1z1T6VKYucCmaFvOmrfPD3xYfdncN0RkM8PUsE
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_APP_ID=${DISCORD_APP_ID}
+      - GUILD_ID=${GUILD_ID}
       - CRAFTY_URL=${CRAFTY_URL}
-      - CRAFTY_INSECURE=${CRAFTY_INSECURE:-1}     # 1 = accetta certificato self-signed
-      - CRAFTY_USER=${CRAFTY_USER}
-      - CRAFTY_PASSWORD=${CRAFTY_PASSWORD}
+      - CRAFTY_API_KEY=${CRAFTY_API_KEY}
       - CRAFTY_SERVER_ID=${CRAFTY_SERVER_ID}
-    restart: unless-stopped
+      - CRAFTY_INSECURE=1
