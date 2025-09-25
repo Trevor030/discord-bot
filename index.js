@@ -58,26 +58,26 @@ client.on("messageCreate", async (m) => {
         return m.reply(`📊 Stato server (Crafty API): **${running ? "running" : "stopped"}**`);
       } catch (err) {
         console.error(err.response?.data || err.message);
-        return m.reply("❌ Errore nel recupero status via API.");
+        return m.reply("📊 Server Spento.");
       }
     }
 
     if (cmd === "on") {
       const c = await getContainer();
       await c.start();
-      return m.reply("🚀 Container Crafty avviato.");
+      return m.reply("🚀 Server Avviato.");
     }
 
     if (cmd === "off") {
       const c = await getContainer();
       await c.stop();
-      return m.reply("⏹️ Container Crafty fermato.");
+      return m.reply("⏹️ Server Fermato.");
     }
 
     if (cmd === "restart") {
       const c = await getContainer();
       await c.restart();
-      return m.reply("🔄 Container Crafty riavviato.");
+      return m.reply("🔄 Server Riavviato Attendi.");
     }
 
     return m.reply("Comandi: `!server status | on | off | restart`");
