@@ -1,6 +1,11 @@
-FROM node:18
+FROM node:18-alpine
 WORKDIR /app
+
+# dipendenze
 COPY package.json package-lock.json* ./
-RUN npm install --production
+RUN npm ci || npm install
+
+# sorgenti
 COPY . .
+
 CMD ["node", "index.js"]
