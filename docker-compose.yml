@@ -6,7 +6,8 @@ services:
     container_name: discordbot-discord-bot-1
     restart: unless-stopped
     environment:
-      - DISCORD_TOKEN=INSERISCI_IL_TUO_TOKEN
-      - CRAFTY_CONTAINER=big-bear-crafty
+     environment:
+  - DISCORD_TOKEN=${DISCORD_TOKEN}
+  - CRAFTY_CONTAINER=big-bear-crafty
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
