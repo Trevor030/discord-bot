@@ -1,21 +1,16 @@
 {
-  "name": "discord-bot-crafty",
+  "name": "discord-crafty-login-bot",
   "version": "1.0.0",
-  "description": "Discord bot to control a Docker container (Crafty) via slash commands",
+  "type": "commonjs",
   "main": "index.js",
   "license": "MIT",
-  "type": "commonjs",
- 
- 
+  "scripts": {
+    "start": "node index.js"
+  },
   "dependencies": {
-    "discord.js": "^14.15.2",
-    "axios": "^1.7.4",
-    "axios-cookiejar-support": "^4.0.6",
-    "tough-cookie": "^4.1.3",
-    "https": "^1.0.0"
-  
-
-
-  
-}
+    "axios": "^1.7.2",
+    "axios-cookiejar-support": "^5.0.3",
+    "discord.js": "^14.15.3",
+    "tough-cookie": "^4.1.3"
+  }
 }
