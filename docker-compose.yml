@@ -1,13 +1,12 @@
 version: "3.8"
+
 services:
   discord-bot:
     build: .
-    environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_APP_ID=${DISCORD_APP_ID}
-      - GUILD_ID=${GUILD_ID}
-      - CRAFTY_URL=${CRAFTY_URL}
-      - CRAFTY_API_KEY=${CRAFTY_API_KEY}
-      - CRAFTY_SERVER_ID=${CRAFTY_SERVER_ID}
-      - CRAFTY_INSECURE=1
+    container_name: discord-crafty-bot
     restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=INSERISCI_IL_TUO_TOKEN
+      - CRAFTY_CONTAINER=big-bear-crafty
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
