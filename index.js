@@ -1,159 +1,91 @@
-// index.js — Crafty via API KEY (robusto: v3+v2, X-Api-Key+Bearer+?key=)
 const { Client, GatewayIntentBits } = require("discord.js");
 const axios = require("axios");
 const https = require("https");
+const Rcon = require("rcon");
 
-const DISCORD_TOKEN    = process.env.DISCORD_TOKEN;
-const CRAFTY_URL       = (process.env.CRAFTY_URL || "").replace(/\/+$/,"");
-const CRAFTY_API_KEY   = (process.env.CRAFTY_API_KEY || "").trim();
+// ===== ENV =====
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const CRAFTY_URL = (process.env.CRAFTY_URL || "").replace(/\/+$/,"");
+const CRAFTY_API_KEY = (process.env.CRAFTY_API_KEY || "").trim();
 const CRAFTY_SERVER_ID = process.env.CRAFTY_SERVER_ID;
-const CRAFTY_INSECURE  = process.env.CRAFTY_INSECURE === "1";
+const CRAFTY_INSECURE = process.env.CRAFTY_INSECURE === "1";
+
+const RCON_HOST = process.env.RCON_HOST;
+const RCON_PORT = parseInt(process.env.RCON_PORT || "25575");
+const RCON_PASSWORD = process.env.RCON_PASSWORD;
 
 if (!DISCORD_TOKEN || !CRAFTY_URL || !CRAFTY_API_KEY || !CRAFTY_SERVER_ID) {
-  throw new Error("❌ Mancano variabili ambiente: DISCORD_TOKEN, CRAFTY_URL, CRAFTY_API_KEY, CRAFTY_SERVER_ID");
+  throw new Error("❌ Mancano variabili Crafty/Discord");
 }
 
+// ===== HTTPS client =====
 if (CRAFTY_INSECURE) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const httpsAgent = new https.Agent({ rejectUnauthorized: !CRAFTY_INSECURE });
 
-const AUTH_HEADERS = [
-  (k)=>({ "X-Api-Key": k, "Content-Type":"application/json" }),
-  (k)=>({ "Authorization": `Bearer ${k}`, "Content-Type":"application/json" }),
-  (k)=>({ "Authorization": `Token ${k}`, "Content-Type":"application/json" }),
-  (k)=>({ "Authorization": `Api-Key ${k}`, "Content-Type":"application/json" }),
-];
+const api = axios.create({
+  baseURL: CRAFTY_URL + "/panel/api/v3",
+  httpsAgent,
+  headers: { "X-Api-Key": CRAFTY_API_KEY }
+});
 
-const BASES = ["/panel/api/v3", "/api/v3", "/panel/api/v2", "/api/v2"];
-
-function looksHtml(res){
-  const ct = res.headers?.["content-type"] || "";
-  return (typeof res.data === "string" && res.data.trim().startsWith("<!DOCTYPE")) || ct.includes("text/html");
+// ===== Funzione RCON =====
+function rconCommand(cmd) {
+  return new Promise((resolve, reject) => {
+    const conn = new Rcon(RCON_HOST, RCON_PORT, RCON_PASSWORD);
+    conn.on("auth", () => {
+      conn.send(cmd);
+    }).on("response", (str) => {
+      resolve(str); conn.disconnect();
+    }).on("error", reject);
+    conn.connect();
+  });
 }
 
-async function tryAll(method, relUrl, body){
-  // prova v3/v2 + vari header
-  for (const base of BASES) {
-    for (const H of AUTH_HEADERS) {
-      try {
-        const r = await axios({
-          method,
-          url: CRAFTY_URL + base + relUrl,
-          data: body,
-          headers: H(CRAFTY_API_KEY),
-          httpsAgent,
-          maxRedirects: 0,
-          validateStatus: s => s>=200 && s<300
-        });
-        if (looksHtml(r)) throw new Error("HTML/login");
-        return r.data;
-      } catch (_) {
-        // come fallback: stessa URL con ?key=
-        try {
-          const sep = relUrl.includes("?") ? "&" : "?";
-          const r2 = await axios({
-            method,
-            url: CRAFTY_URL + base + relUrl + `${sep}key=${encodeURIComponent(CRAFTY_API_KEY)}`,
-            data: body,
-            headers: { "Content-Type":"application/json" },
-            httpsAgent,
-            maxRedirects: 0,
-            validateStatus: s => s>=200 && s<300
-          });
-          if (looksHtml(r2)) throw new Error("HTML/login");
-          return r2.data;
-        } catch(e2){ /* passa alla prossima variante */ }
-      }
-    }
-  }
-  throw new Error("403");
-}
-
-// ---- API helpers
-async function getStatus() {
-  // prova stats/state su v3/v2
-  const paths = [
-    `/servers/${CRAFTY_SERVER_ID}/stats`,
-    `/servers/${CRAFTY_SERVER_ID}/state`,
-    `/servers/${CRAFTY_SERVER_ID}` // dettaglio come fallback
-  ];
-  for (const p of paths) {
-    try {
-      const d = await tryAll("GET", p);
-      const data = (d && typeof d==="object" && d.data) ? d.data : d;
-      const candidates = [data?.running, data?.online, data?.state, data?.status, data?.power, data?.server_state];
-      for (const v of candidates) {
-        if (v === true) return "running";
-        if (v === false) return "stopped";
-        if (typeof v === "number") return v ? "running" : "stopped";
-        if (typeof v === "string") return v.toLowerCase();
-      }
-      return "unknown";
-    } catch (_) { /* prova prossimo path */ }
-  }
-  throw new Error("403");
-}
-
-async function power(action){
-  // v3: POST /power {action}, v2: POST /power/{action}
-  // proviamo entrambi
-  try { await tryAll("POST", `/servers/${CRAFTY_SERVER_ID}/power`, { action }); return; } catch {}
-  await tryAll("POST", `/servers/${CRAFTY_SERVER_ID}/power/${action}`);
-}
-
-// ---- Discord bot
+// ===== Discord Bot =====
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  const fp = CRAFTY_API_KEY.length>12 ? `${CRAFTY_API_KEY.slice(0,6)}…${CRAFTY_API_KEY.slice(-6)}` : "(short)";
-  console.log(`BASE=${CRAFTY_URL} | INSECURE=${CRAFTY_INSECURE?1:0} | SERVER_ID=${CRAFTY_SERVER_ID} | APIKEY=${fp}`);
 });
 
 client.on("messageCreate", async (m) => {
   if (m.author.bot) return;
   if (!m.content.startsWith("!server")) return;
-  const [, sub] = m.content.trim().split(/\s+/);
-  const cmd = (sub || "").toLowerCase();
+  const [, cmd] = m.content.trim().split(/\s+/);
 
   try {
     if (cmd === "status") {
-      const st = await getStatus();
-      return m.reply(`Stato server: **${st}**`);
+      const res = await api.get(`/servers/${CRAFTY_SERVER_ID}/stats`);
+      const running = res.data?.data?.running;
+      return m.reply("Stato server: " + (running ? "running" : "stopped"));
     }
-    if (cmd === "on") {
-      await power("start");
-      return m.reply("🚀 Avvio richiesto.");
+
+    if (cmd === "say") {
+      const text = m.content.split(" ").slice(2).join(" ") || "Hello from Discord!";
+      const r = await rconCommand(`say ${text}`);
+      return m.reply("📢 Messaggio inviato in Minecraft: " + text);
     }
+
     if (cmd === "off") {
-      await power("stop");
-      return m.reply("⏹️ Arresto richiesto.");
+      await rconCommand("stop");
+      return m.reply("⏹️ Arresto server richiesto (via RCON).");
     }
+
+    if (cmd === "on") {
+      return m.reply("⚠️ Avvio non supportato via RCON. Usa Portainer o Crafty.");
+    }
+
     if (cmd === "restart") {
-      await power("restart");
-      return m.reply("🔄 Riavvio richiesto.");
+      await rconCommand("stop");
+      return m.reply("🔄 Riavvio richiesto (server si spegnerà, poi riavvialo da Portainer).");
     }
-    if (cmd === "permscheck") {
-      const out = [];
-      async function t(label, fn){ try { await fn(); out.push(`${label}: OK`); } catch(e){ out.push(`${label}: 403`);} }
-      await t("POWER start",   () => power("start"));
-      await t("POWER stop",    () => power("stop"));
-      await t("POWER restart", () => power("restart"));
-      return m.reply("🔎 Permscheck:\n```\n" + out.join("\n") + "\n```");
-    }
-    if (cmd === "debug") {
-      // prova whoami/servers con più varianti
-      let who=null, list=null, errW=null, errL=null;
-      try { who  = await tryAll("GET", "/whoami"); } catch(e){ errW = e.message; }
-      try { list = await tryAll("GET", "/servers"); } catch(e){ errL = e.message; }
-      return m.reply("Debug:\n```json\n" + JSON.stringify({ who: who||errW, servers: list||errL }, null, 2).slice(0,1800) + "\n```");
-    }
-    // help
-    return m.reply("Comandi: `!server status | on | off | restart | permscheck | debug`");
-  } catch (e) {
-    const code = e.response?.status ? `HTTP ${e.response.status}` : (e.code || e.message);
-    return m.reply(`❌ Errore: ${code}`);
+
+    return m.reply("Comandi: !server status | on | off | restart | say <msg>");
+  } catch (err) {
+    console.error(err);
+    return m.reply("❌ Errore: " + (err.response?.status || err.message));
   }
 });
 
