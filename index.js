@@ -22,7 +22,7 @@ async function getServerStatus() {
   try {
     const s = await getServer();
     const data = await s.inspect();
-    return data.State.Running ? "running" : "stopped";
+    return data.State.Running ? "Acceso" : "Spento";
   } catch (_) {
     return "unknown";
   }
@@ -64,25 +64,25 @@ client.on("messageCreate", async (m) => {
 
     if (sub === "status") {
       const st = await getServerStatus();
-      return m.reply(`📊 Stato server **${CRAFTY_CONTAINER}**: **${st}**`);
+      return m.reply(`📊 Stato Server: **${st}**`);
     }
 
     if (sub === "on") {
       const s = await getServer();
       await s.start();
-      return m.reply("🚀 Server avviato.");
+      return m.reply("🚀 Server Avviato.");
     }
 
     if (sub === "off") {
       const s = await getServer();
       await s.stop();
-      return m.reply("⛔️ Server fermato.");
+      return m.reply("⛔️ Server Fermato.");
     }
 
     if (sub === "restart") {
       const s = await getServer();
       await s.restart();
-      return m.reply("🔄 Server riavviato.");
+      return m.reply("🔄 Server Riavviato Attendi.");
     }
 
     if (sub === "debug") {
