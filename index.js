@@ -1,96 +1,84 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  REST, 
-  Routes, 
-  SlashCommandBuilder, 
-  Events 
+const {
+  Client,
+  GatewayIntentBits,
+  SlashCommandBuilder,
+  REST,
+  Routes,
+  Events,
 } = require("discord.js");
 const Docker = require("dockerode");
 
-// === Variabili ambiente ===
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const APP_ID = process.env.DISCORD_APP_ID;  // Application ID dal Dev Portal
-const GUILD_ID = process.env.GUILD_ID;      // ID del tuo server Discord
-const CONTAINER_NAME = process.env.CRAFTY_CONTAINER || "big-bear-crafty";
-const ALLOWED_CHANNEL_ID = "1420794687714754712"; // canale consentito
+// === Env ===
+const DISCORD_TOKEN   = process.env.DISCORD_TOKEN;
+const DISCORD_APP_ID  = process.env.DISCORD_APP_ID;   // Application ID
+const GUILD_ID        = process.env.GUILD_ID;         // ID del tuo server
+const CRAFTY_CONTAINER= process.env.CRAFTY_CONTAINER || "big-bear-crafty";
+const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID || "1420794687714754712";
 
-if (!DISCORD_TOKEN || !APP_ID || !GUILD_ID) {
-  throw new Error("❌ Manca una variabile ambiente: DISCORD_TOKEN, DISCORD_APP_ID, GUILD_ID");
+if (!DISCORD_TOKEN || !DISCORD_APP_ID || !GUILD_ID) {
+  throw new Error("Mancano: DISCORD_TOKEN, DISCORD_APP_ID, GUILD_ID");
 }
 
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
-// === Definizione comandi slash ===
-const commands = [
-  new SlashCommandBuilder()
-    .setName("server")
-    .setDescription("Gestisci il server Minecraft")
-    .addSubcommand(sub =>
-      sub.setName("status").setDescription("Mostra lo stato del server")
-    )
-    .addSubcommand(sub =>
-      sub.setName("on").setDescription("Accende il server")
-    )
-    .addSubcommand(sub =>
-      sub.setName("off").setDescription("Spegne il server")
-    )
-    .addSubcommand(sub =>
-      sub.setName("restart").setDescription("Riavvia il server")
-    )
-    .addSubcommand(sub =>
-      sub.setName("debug").setDescription("Debug del bot/server")
-    )
-].map(c => c.toJSON());
+// === Definizione /server con subcomandi ===
+const serverCmd = new SlashCommandBuilder()
+  .setName("server")
+  .setDescription("Gestisci il server Minecraft (container Crafty)")
+  .addSubcommand(s => s.setName("status").setDescription("Mostra lo stato"))
+  .addSubcommand(s => s.setName("on").setDescription("Accende il container"))
+  .addSubcommand(s => s.setName("off").setDescription("Spegne il container"))
+  .addSubcommand(s => s.setName("restart").setDescription("Riavvia il container"))
+  .addSubcommand(s => s.setName("debug").setDescription("Mostra info di debug"));
 
-// === Registra i comandi su Discord ===
+const commandsJson = [serverCmd.toJSON()];
+
+// === Auto-registrazione comandi sulla GUILD ===
 const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
 (async () => {
   try {
-    console.log("🔄 Registrazione slash commands...");
+    console.log("🔄 Registro slash commands…");
     await rest.put(
-      Routes.applicationGuildCommands(APP_ID, GUILD_ID),
-      { body: commands }
+      Routes.applicationGuildCommands(DISCORD_APP_ID, GUILD_ID),
+      { body: commandsJson }
     );
-    console.log("✅ Slash commands registrati!");
+    console.log("✅ Slash commands registrati sulla guild:", GUILD_ID);
   } catch (err) {
     console.error("❌ Errore registrazione comandi:", err);
   }
 })();
 
-// === Funzioni helper Docker ===
+// === Helper Docker ===
 async function getContainer() {
-  return docker.getContainer(CONTAINER_NAME);
+  return docker.getContainer(CRAFTY_CONTAINER);
 }
 async function containerStatus() {
   try {
     const c = await getContainer();
     const data = await c.inspect();
-    return data.State.Running ? "acceso" : "spento";
+    return data.State.Running ? "running" : "stopped";
   } catch {
     return "unknown";
   }
 }
 
-// === Client Discord ===
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
-});
+// === Client ===
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-// === Gestione slash ===
+// === Handler slash ===
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   if (interaction.commandName !== "server") return;
 
-  // ✅ Filtro: solo nel canale specifico
+  // Limita al canale desiderato
   if (interaction.channelId !== ALLOWED_CHANNEL_ID) {
     return interaction.reply({
       content: `❌ Puoi usare i comandi solo in <#${ALLOWED_CHANNEL_ID}>.`,
-      ephemeral: true
+      ephemeral: true,
     });
   }
 
@@ -99,36 +87,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (sub === "status") {
       const st = await containerStatus();
-      return interaction.reply(`📊 Stato Server: **${st}**`);
+      return interaction.reply(`📊 Stato container **${CRAFTY_CONTAINER}**: **${st}**`);
     }
-
     if (sub === "on") {
       const c = await getContainer();
       await c.start();
-      return interaction.reply("🚀 Container Avviato.");
+      return interaction.reply("🚀 Container avviato.");
     }
-
     if (sub === "off") {
       const c = await getContainer();
       await c.stop();
-      return interaction.reply("⏹️ Container Fermato.");
+      return interaction.reply("⏹️ Container fermato.");
     }
-
     if (sub === "restart") {
       const c = await getContainer();
       await c.restart();
-      return interaction.reply("🔄 Container Riavviato Attendi.");
+      return interaction.reply("🔄 Container riavviato.");
     }
-
     if (sub === "debug") {
       const st = await containerStatus();
-      return interaction.reply(`🐛 Debug:\n- Server: ${CONTAINER_NAME}\n- Stato: ${st}`);
+      return interaction.reply(
+        `🐛 Debug\n• Container: **${CRAFTY_CONTAINER}**\n• Stato: **${st}**\n• Canale consentito: <#${ALLOWED_CHANNEL_ID}>`
+      );
     }
   } catch (err) {
     console.error(err);
-    return interaction.reply("❌ Errore: " + err.message);
+    return interaction.reply({ content: "❌ Errore: " + err.message, ephemeral: true });
   }
 });
 
-// === Login ===
 client.login(DISCORD_TOKEN);
