@@ -1,4 +1,4 @@
-const {
+erconst {
   Client,
   GatewayIntentBits,
   SlashCommandBuilder,
@@ -56,7 +56,7 @@ async function containerStatus() {
   try {
     const c = await getContainer();
     const data = await c.inspect();
-    return data.State.Running ? "running" : "stopped";
+    return data.State.Running ? "Acceso" : "Spento";
   } catch {
     return "unknown";
   }
@@ -87,27 +87,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (sub === "status") {
       const st = await containerStatus();
-      return interaction.reply(`📊 Stato container **${CRAFTY_CONTAINER}**: **${st}**`);
+      return interaction.reply(`📊 Stato Server: **${st}**`);
     }
     if (sub === "on") {
       const c = await getContainer();
       await c.start();
-      return interaction.reply("🚀 Container avviato.");
+      return interaction.reply("🚀 Server Avviato.");
     }
     if (sub === "off") {
       const c = await getContainer();
       await c.stop();
-      return interaction.reply("⏹️ Container fermato.");
+      return interaction.reply("⏹️ Server Fermato.");
     }
     if (sub === "restart") {
       const c = await getContainer();
       await c.restart();
-      return interaction.reply("🔄 Container riavviato.");
+      return interaction.reply("🔄 Server Riavviato Attendi.");
     }
     if (sub === "debug") {
       const st = await containerStatus();
       return interaction.reply(
-        `🐛 Debug\n• Container: **${CRAFTY_CONTAINER}**\n• Stato: **${st}**\n• Canale consentito: <#${ALLOWED_CHANNEL_ID}>`
+        `🐛 Debug\n• Server\n• Stato: **${st}**\n• Canale consentito: <#${ALLOWED_CHANNEL_ID}>`
       );
     }
   } catch (err) {
