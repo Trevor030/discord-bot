@@ -22,7 +22,7 @@ async function getServerStatus() {
   try {
     const s = await getServer();
     const data = await s.inspect();
-    return data.State.Running ? "running" : "stopped";
+    return data.State.Running ? "Acceso" : "Spento";
   } catch {
     return "unknown";
   }
@@ -136,7 +136,7 @@ client.on("messageCreate", async (m) => {
 
     if (sub === "status") {
       const st = await getServerStatus();
-      await replyAndSchedule(`📊 Stato server **${CRAFTY_CONTAINER}**: **${st}**`);
+      await replyAndSchedule(`📊 Stato Server: **${st}**`);
       await safeDelete(m);
       return;
     }
@@ -145,7 +145,7 @@ client.on("messageCreate", async (m) => {
       const s = await getServer();
       await s.start();
 
-      const msg = await m.reply("🚀 Server in accensione...");
+      const msg = await m.reply("🚀 Server in Accensione...");
       scheduleDelete(msg, DAY_MS);
 
       setTimeout(async () => {
@@ -154,7 +154,7 @@ client.on("messageCreate", async (m) => {
       }, 30_000);
 
       setTimeout(async () => {
-        const done = await m.reply("✅ Server acceso!");
+        const done = await m.reply("✅ Server Acceso!");
         scheduleDelete(done, DAY_MS);
       }, 60_000);
 
@@ -165,7 +165,7 @@ client.on("messageCreate", async (m) => {
     if (sub === "off") {
       const s = await getServer();
       await s.stop();
-      await replyAndSchedule("⛔️ Server fermato.");
+      await replyAndSchedule("⛔️ Server Fermato.");
       await safeDelete(m);
       return;
     }
@@ -173,7 +173,7 @@ client.on("messageCreate", async (m) => {
     if (sub === "restart") {
       const s = await getServer();
       await s.restart();
-      await replyAndSchedule("🔄 Server riavviato.");
+      await replyAndSchedule("🔄 Server Riavviato Attendi.");
       await safeDelete(m);
       return;
     }
@@ -181,7 +181,7 @@ client.on("messageCreate", async (m) => {
     if (sub === "debug") {
       const st = await getServerStatus();
       await replyAndSchedule(
-        `🐛 Debug\n• Server: **${CRAFTY_CONTAINER}**\n• Stato: **${st}**\n• Canale: <#${ALLOWED_CHANNEL_ID}>`
+        `🐛 Debug\n• Server\n• Stato: **${st}**\n• Canale: <#${ALLOWED_CHANNEL_ID}>`
       );
       await safeDelete(m);
       return;
