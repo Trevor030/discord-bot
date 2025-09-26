@@ -1,140 +1,103 @@
-// index.js
-const {
-  Client,
-  GatewayIntentBits,
-  SlashCommandBuilder,
-  REST,
-  Routes,
-  Events,
-} = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 const Docker = require("dockerode");
 
-// ====== ENV OBBLIGATORIE ======
-const DISCORD_TOKEN    = process.env.DISCORD_TOKEN;         // Token bot
-const DISCORD_APP_ID   = process.env.DISCORD_APP_ID;        // Application ID
-const GUILD_ID         = process.env.GUILD_ID;              // ID del tuo server
+// ==== ENV ====
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN;                    // obbligatorio
 const CRAFTY_CONTAINER = process.env.CRAFTY_CONTAINER || "big-bear-crafty";
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID || "1420794687714754712";
+const PREFIX = "!"; // prefisso unico
 
-if (!DISCORD_TOKEN || !DISCORD_APP_ID || !GUILD_ID) {
-  throw new Error("Mancano ENV: DISCORD_TOKEN, DISCORD_APP_ID, GUILD_ID");
+if (!DISCORD_TOKEN) {
+  throw new Error("❌ Manca DISCORD_TOKEN (impostalo nello Stack di Portainer).");
 }
 
-// ====== DOCKER ======
+// ==== Docker client ====
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
-async function getContainer() {
+
+async function getServer() {
   return docker.getContainer(CRAFTY_CONTAINER);
 }
-async function containerStatus() {
+
+async function getServerStatus() {
   try {
-    const c = await getContainer();
-    const data = await c.inspect();
+    const s = await getServer();
+    const data = await s.inspect();
     return data.State.Running ? "running" : "stopped";
-  } catch {
+  } catch (_) {
     return "unknown";
   }
 }
 
-// ====== DEFINIZIONE SLASH COMMAND ======
-const serverCmd = new SlashCommandBuilder()
-  .setName("server")
-  .setDescription("Gestisci il server Minecraft (container Crafty)")
-  .addSubcommand(s => s.setName("status").setDescription("Mostra lo stato"))
-  .addSubcommand(s => s.setName("on").setDescription("Accende il container"))
-  .addSubcommand(s => s.setName("off").setDescription("Spegne il container"))
-  .addSubcommand(s => s.setName("restart").setDescription("Riavvia il container"))
-  .addSubcommand(s => s.setName("debug").setDescription("Mostra info di debug"));
-
-const commandsJson = [serverCmd.toJSON()];
-
-// ====== REGISTRAZIONE COMANDI SULLA GUILD ======
-const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-(async () => {
-  try {
-    console.log("🔄 Registro slash commands…");
-    await rest.put(
-      Routes.applicationGuildCommands(DISCORD_APP_ID, GUILD_ID),
-      { body: commandsJson }
-    );
-    console.log("✅ Slash commands registrati sulla guild:", GUILD_ID);
-
-    const current = await rest.get(
-      Routes.applicationGuildCommands(DISCORD_APP_ID, GUILD_ID)
-    );
-    console.log("📋 Comandi attuali:");
-    for (const cmd of current) {
-      console.log(`- /${cmd.name}`, JSON.stringify(cmd.options ?? [], null, 2));
-    }
-  } catch (err) {
-    console.error("❌ Errore registrazione/verifica comandi:", err);
-  }
-})();
-
-// ====== CLIENT DISCORD ======
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// ==== Discord client ====
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent, // ATTIVA "Message Content Intent" nel Dev Portal
+  ],
+});
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`SERVER=${CRAFTY_CONTAINER} | CANALE=${ALLOWED_CHANNEL_ID}`);
 });
 
-// ====== HANDLER SLASH (SOLO SUB-COMMANDS) ======
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== "server") return;
-
-  // Limita al canale richiesto
-  if (interaction.channelId !== ALLOWED_CHANNEL_ID) {
-    return interaction.reply({
-      content: `❌ Puoi usare i comandi solo in <#${ALLOWED_CHANNEL_ID}>.`,
-      ephemeral: true,
-    });
-  }
-
-  let sub;
+client.on("messageCreate", async (m) => {
   try {
-    sub = interaction.options.getSubcommand(); // "status" | "on" | "off" | "restart" | "debug"
-  } catch {
-    console.log("⚠️ Subcommand non riconosciuto:", interaction.options?.data);
-    return interaction.reply({ content: "Comando non riconosciuto.", ephemeral: true });
-  }
+    if (m.author.bot) return;
+    if (!m.content.startsWith(PREFIX)) return;
 
-  try {
+    // ✅ canale autorizzato
+    if (m.channel.id !== ALLOWED_CHANNEL_ID) {
+      return m.reply(`❌ Usa i comandi solo in <#${ALLOWED_CHANNEL_ID}>.`);
+    }
+
+    // parsing base
+    const [cmd, sub, ...rest] = m.content.trim().slice(PREFIX.length).split(/\s+/);
+
+    // solo !server ...
+    if (cmd !== "server") return;
+
+    if (!sub || sub === "help") {
+      return m.reply("Comandi: `!server status | on | off | restart | debug`");
+    }
+
     if (sub === "status") {
-      const st = await containerStatus();
-      return interaction.reply(`📊 Stato container **${CRAFTY_CONTAINER}**: **${st}**`);
+      const st = await getServerStatus();
+      return m.reply(`📊 Stato server **${CRAFTY_CONTAINER}**: **${st}**`);
     }
 
     if (sub === "on") {
-      const c = await getContainer();
-      await c.start();
-      return interaction.reply("🚀 Container avviato.");
+      const s = await getServer();
+      await s.start();
+      return m.reply("🚀 Server avviato.");
     }
 
     if (sub === "off") {
-      const c = await getContainer();
-      await c.stop();
-      return interaction.reply("⛔️ Container fermato.");
+      const s = await getServer();
+      await s.stop();
+      return m.reply("⛔️ Server fermato.");
     }
 
     if (sub === "restart") {
-      const c = await getContainer();
-      await c.restart();
-      return interaction.reply("🔄 Container riavviato.");
+      const s = await getServer();
+      await s.restart();
+      return m.reply("🔄 Server riavviato.");
     }
 
     if (sub === "debug") {
-      const st = await containerStatus();
-      return interaction.reply(
-        `🐛 Debug\n• Container: **${CRAFTY_CONTAINER}**\n• Stato: **${st}**\n• Canale consentito: <#${ALLOWED_CHANNEL_ID}>`
+      const st = await getServerStatus();
+      return m.reply(
+        `🐛 Debug\n• Server: **${CRAFTY_CONTAINER}**\n• Stato: **${st}**\n• Canale: <#${ALLOWED_CHANNEL_ID}>`
       );
     }
 
-    return interaction.reply({ content: "Comando non riconosciuto.", ephemeral: true });
+    // fallback
+    return m.reply("Comandi: `!server status | on | off | restart | debug`");
   } catch (err) {
     console.error(err);
-    return interaction.reply({ content: "❌ Errore: " + err.message, ephemeral: true });
+    return m.reply("❌ Errore: " + (err.message || "operazione non riuscita"));
   }
 });
 
-// ====== LOGIN ======
 client.login(DISCORD_TOKEN);
