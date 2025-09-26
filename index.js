@@ -1,172 +1,159 @@
-const { Client, GatewayIntentBits } = require("discord.js");
-const Docker = require("dockerode");
+import 'dotenv/config'
+import sodium from 'libsodium-wrappers'
+await sodium.ready
 
-// ==== ENV ====
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN; // obbligatorio
-const CRAFTY_CONTAINER = process.env.CRAFTY_CONTAINER || "big-bear-crafty";
-const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID || "1420794687714754712";
-const PREFIX = "!";
+import { Client, GatewayIntentBits, EmbedBuilder } from 'discord.js'
+import { joinVoiceChannel, createAudioPlayer, createAudioResource, NoSubscriberBehavior, AudioPlayerStatus, getVoiceConnection, StreamType } from '@discordjs/voice'
+import { spawn } from 'child_process'
 
-if (!DISCORD_TOKEN) {
-  throw new Error("❌ Manca DISCORD_TOKEN (impostalo nello Stack di Portainer).");
-}
+const PREFIX = '!'
+const queues = new Map()
 
-// ==== Docker client ====
-const docker = new Docker({ socketPath: "/var/run/docker.sock" });
-
-async function getServer() { return docker.getContainer(CRAFTY_CONTAINER); }
-async function getServerStatus() {
-  try {
-    const s = await getServer();
-    const data = await s.inspect();
-    return data.State.Running ? "Acceso" : "Spento";
-  } catch { return "unknown"; }
-}
-
-// ==== Helpers ====
-const DAY_MS = 24 * 60 * 60 * 1000;
-async function safeDelete(msg) { try { await msg.delete(); } catch {} }
-function scheduleDelete(msg, ms = DAY_MS) { setTimeout(() => safeDelete(msg), ms); }
-
-// ==== Discord client ====
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, // abilita Message Content Intent nel Dev Portal
-  ],
-});
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+})
 
-client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  console.log(`SERVER=${CRAFTY_CONTAINER} | CANALE=${ALLOWED_CHANNEL_ID}`);
+client.once('clientReady', () => console.log(`🤖 Online come ${client.user.tag}`))
 
-  // 🧹 Cleaner: ogni ora elimina TUTTO > 24h nel canale (bot + utenti)
-  setInterval(async () => {
-    try {
-      const channel = await client.channels.fetch(ALLOWED_CHANNEL_ID);
-      if (!channel || !channel.isTextBased()) return;
-
-      let lastId;
-      while (true) {
-        const batch = await channel.messages.fetch({ limit: 100, before: lastId });
-        if (batch.size === 0) break;
-
-        const now = Date.now();
-        const recentForBulk = [];
-        const tooOld = [];
-
-        for (const [, msg] of batch) {
-          const age = now - msg.createdTimestamp;
-          if (age >= DAY_MS) {
-            // bulkDelete consente solo <=14 giorni
-            const maxBulk = 14 * 24 * 60 * 60 * 1000;
-            if (age < maxBulk) recentForBulk.push(msg);
-            else tooOld.push(msg);
-          }
-        }
-
-        if (recentForBulk.length) {
-          try { await channel.bulkDelete(recentForBulk); }
-          catch { for (const m of recentForBulk) await safeDelete(m); }
-        }
-        for (const m of tooOld) await safeDelete(m);
-
-        lastId = batch.lastKey();
-        if (!lastId) break;
-      }
-    } catch (e) {
-      console.error("Cleaner error:", e.message);
-    }
-  }, 60 * 60 * 1000);
-});
-
-client.on("messageCreate", async (m) => {
-  try {
-    if (m.author.bot) return;
-    if (m.channel.id !== ALLOWED_CHANNEL_ID) return; // ignora fuori canale
-
-    // ❌ Non contiene !server → elimina SUBITO
-    if (!m.content.startsWith(PREFIX + "server")) {
-      await safeDelete(m);
-      return;
-    }
-
-    // --- Gestione comandi !server ---
-    const [cmd, sub] = m.content.trim().slice(PREFIX.length).split(/\s+/, 2);
-    if (cmd !== "server") return;
-
-    // Helper: rispondi e programma cancellazione della risposta tra 24h
-    async function replyAndSchedule(content) {
-      const reply = await m.reply(content);
-      scheduleDelete(reply, DAY_MS);
-    }
-
-    // ✅ Comandi validi NON vengono eliminati subito (si elimineranno dopo 24h)
-    if (sub === "status") {
-      const st = await getServerStatus();
-      await replyAndSchedule(`📊 Stato Server: **${st}**`);
-      scheduleDelete(m, DAY_MS); // elimina il messaggio UTENTE tra 24h (non subito)
-      return;
-    }
-
-    if (sub === "on") {
-      const s = await getServer();
-      await s.start();
-
-      const msg = await m.reply("🚀 Server in Accensione...");
-      scheduleDelete(msg, DAY_MS);
-
-      setTimeout(async () => {
-        const step = await m.reply("⏳ Ci siamo quasi...");
-        scheduleDelete(step, DAY_MS);
-      }, 30_000);
-
-      setTimeout(async () => {
-        const done = await m.reply("✅ Server Acceso!");
-        scheduleDelete(done, DAY_MS);
-      }, 60_000);
-
-      scheduleDelete(m, DAY_MS); // non eliminare subito: tra 24h
-      return;
-    }
-
-    if (sub === "off") {
-      const s = await getServer();
-      await s.stop();
-      await replyAndSchedule("⛔️ Server Fermato.");
-      scheduleDelete(m, DAY_MS);
-      return;
-    }
-
-    if (sub === "restart") {
-      const s = await getServer();
-      await s.restart();
-      await replyAndSchedule("🔄 Server Riavviato Attendi.");
-      scheduleDelete(m, DAY_MS);
-      return;
-    }
-
-    if (sub === "debug") {
-      const st = await getServerStatus();
-      await replyAndSchedule(
-        `🐛 Debug\n• Server: **${CRAFTY_CONTAINER}**\n• Stato: **${st}**\n• Canale: <#${ALLOWED_CHANNEL_ID}>`
-      );
-      scheduleDelete(m, DAY_MS);
-      return;
-    }
-
-    // ❌ Comando !server errato → rispondi + elimina SUBITO il messaggio utente
-    await replyAndSchedule("❌ Comando non riconosciuto.\nUsa: `!server status | on | off | restart | debug`");
-    await safeDelete(m);
-  } catch (err) {
-    console.error(err);
-    try {
-      const resp = await m.reply("❌ Errore: " + (err.message || "operazione non riuscita"));
-      scheduleDelete(resp, DAY_MS);
-      // Non eliminare subito il messaggio utente se era valido; qui non lo sappiamo, quindi non lo tocchiamo
-    } catch {}
+function ensureGuild(guildId, channel) {
+  if (!queues.has(guildId)) {
+    const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } })
+    player.on('error', e => console.error('Audio player error:', e))
+    queues.set(guildId, { queue: [], player, textChannel: channel })
   }
-});
+  return queues.get(guildId)
+}
 
-client.login(DISCORD_TOKEN);
+async function connectToVoice(channel) {
+  return joinVoiceChannel({
+    channelId: channel.id,
+    guildId: channel.guild.id,
+    adapterCreator: channel.guild.voiceAdapterCreator,
+    selfDeaf: true
+  })
+}
+
+function isUrl(str) {
+  try { new URL(str); return true } catch { return false }
+}
+
+// ---------- FAST PATH (no transcode): yt-dlp -> WebM/Opus ----------
+function ytOpusStream(urlOrQuery) {
+  // Try to fetch an opus stream directly (very fast start)
+  const args = ['-f', 'bestaudio[acodec=opus]/bestaudio', '--no-playlist', '-o', '-', urlOrQuery]
+  const child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  child.stderr.on('data', d => console.error('[yt-dlp opus]', d.toString()))
+  return child
+}
+
+// ---------- FALLBACK (transcode): yt-dlp -> ffmpeg -> Ogg/Opus ----------
+function transcodePipeline(urlOrQuery) {
+  const ytdlp = spawn('yt-dlp', ['-f', 'bestaudio', '--no-playlist', '-o', '-', urlOrQuery], { stdio: ['ignore', 'pipe', 'pipe'] })
+  ytdlp.stderr.on('data', d => console.error('[yt-dlp]', d.toString()))
+  const ffmpeg = spawn('ffmpeg', [
+    '-loglevel', 'error', '-hide_banner',
+    '-i', 'pipe:0',
+    '-vn',
+    '-ac', '2',
+    '-c:a', 'libopus', '-b:a', '128k',
+    '-f', 'ogg', 'pipe:1'
+  ], { stdio: ['pipe', 'pipe', 'pipe'] })
+  ytdlp.stdout.pipe(ffmpeg.stdin)
+  ffmpeg.stderr.on('data', d => console.error('[ffmpeg]', d.toString()))
+  return ffmpeg
+}
+
+async function resolveYouTube(query) {
+  if (isUrl(query)) return { url: query, title: query }
+  return new Promise((resolve, reject) => {
+    const args = ['--default-search', 'ytsearch', '-f', 'bestaudio', '--no-playlist', '--get-title', '--get-url', query]
+    const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    proc.stderr.on('data', d => console.error('[yt-dlp search]', d.toString()))
+    let output = ''
+    proc.stdout.on('data', d => { output += d.toString() })
+    proc.on('close', code => {
+      if (code !== 0) return reject(new Error('yt-dlp search failed'))
+      const lines = output.trim().split('\n')
+      if (lines.length < 2) return reject(new Error('Nessun risultato valido trovato.'))
+      const title = lines[0]; const url = lines[1]
+      resolve({ url, title })
+    })
+  })
+}
+
+async function playNext(guildId) {
+  const data = queues.get(guildId)
+  if (!data) return
+  const next = data.queue.shift()
+  if (!next) { data.textChannel?.send('📭 Coda finita.'); return }
+  try {
+    const { url, title } = await resolveYouTube(next.query)
+
+    // 1) Fast path: try WebM/Opus direct
+    let proc = ytOpusStream(url)
+    let resource = createAudioResource(proc.stdout, { inputType: StreamType.WebmOpus })
+
+    // If the opus path errors early, fallback to transcode
+    let started = false
+    const startTimer = setTimeout(() => {
+      if (!started) console.log('Startup taking longer than expected (opus path)...')
+    }, 3000)
+
+    // Monitor child exit quickly; if it closes before player starts, fallback
+    let fellBack = false
+    proc.once('close', code => {
+      if (!started && !fellBack) {
+        console.warn('Direct opus stream ended before start; falling back to ffmpeg. code=', code)
+        fellBack = true
+        proc = transcodePipeline(url)
+        resource = createAudioResource(proc.stdout, { inputType: StreamType.OggOpus })
+        data.player.play(resource)
+      }
+    })
+
+    data.player.once(AudioPlayerStatus.Playing, () => { started = true; clearTimeout(startTimer) })
+    data.player.play(resource)
+
+    const embed = new EmbedBuilder().setTitle('▶️ In riproduzione').setDescription(`[${title}](${url})`).setFooter({ text: `Richiesto da ${next.requestedBy}` })
+    data.textChannel?.send({ embeds: [embed] })
+  } catch (err) {
+    console.error('playNext error:', err)
+    data.textChannel?.send(`⚠️ Errore con questo brano: ${err.message}`)
+    playNext(guildId)
+  }
+}
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return
+  if (!message.content.startsWith(PREFIX)) return
+
+  const args = message.content.slice(PREFIX.length).trim().split(/\s+/)
+  const command = (args.shift() || '').toLowerCase()
+  const guildId = message.guildId
+  const data = ensureGuild(guildId, message.channel)
+
+  if (command === 'play') {
+    const query = args.join(' ')
+    if (!query) return void message.reply('Uso: `!play <link YouTube o titolo>`')
+    const vc = message.member.voice?.channel
+    if (!vc) return void message.reply('Devi essere in un canale vocale 🎙️')
+    try {
+      const conn = getVoiceConnection(guildId) || await connectToVoice(vc)
+      conn.subscribe(data.player)
+      data.queue.push({ query, requestedBy: message.author.tag })
+      if (data.player.state.status === AudioPlayerStatus.Idle) playNext(guildId)
+      await message.reply(`🎶 Aggiunto in coda: **${query}**`)
+    } catch (e) {
+      console.error(e)
+      await message.reply('❌ Non riesco a connettermi al canale vocale.')
+    }
+    return
+  }
+  if (command === 'pause') { data.player.pause(); return void message.reply('⏸️ Pausa.') }
+  if (command === 'resume') { data.player.unpause(); return void message.reply('▶️ Ripresa.') }
+  if (command === 'skip') { data.player.stop(true); return void message.reply('⏭️ Skip.') }
+  if (command === 'stop') { data.queue.length = 0; data.player.stop(true); return void message.reply('🛑 Fermato e coda svuotata.') }
+  if (command === 'leave') { getVoiceConnection(guildId)?.destroy(); return void message.reply('👋 Uscito dal canale.') }
+})
+
+client.login(process.env.DISCORD_TOKEN)
