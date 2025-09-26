@@ -1,4 +1,4 @@
-oconst { Client, GatewayIntentBits } = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 const Docker = require("dockerode");
 
 // ==== ENV ====
