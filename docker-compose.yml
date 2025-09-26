@@ -2,16 +2,16 @@ version: "3.8"
 
 services:
   discord-bot:
-    build: .
+    build: .                      # richiede Dockerfile + index.js + package.json nel repo
     container_name: discord-crafty-bot
     restart: unless-stopped
     environment:
-      DISCORD_TOKEN: ${DISCORD_TOKEN}
-      CRAFTY_CONTAINER: ${CRAFTY_CONTAINER:-big-bear-crafty}
-      CRAFTY_URL: ${CRAFTY_URL}
-      CRAFTY_API_KEY: ${CRAFTY_API_KEY}
-      CRAFTY_SERVER_ID: ${CRAFTY_SERVER_ID}
-      CRAFTY_INSECURE: ${CRAFTY_INSECURE:-1}
-      ALLOWED_CHANNEL_ID: 1420794687714754712
+      DISCORD_TOKEN: ${DISCORD_TOKEN}          # ← metti in Portainer (NON su GitHub)
+      DISCORD_APP_ID: ${DISCORD_APP_ID}        # Application ID della tua app Discord
+      GUILD_ID: ${GUILD_ID}                    # ID del tuo server Discord
+      CRAFTY_CONTAINER: ${CRAFTY_CONTAINER}    # es. big-bear-crafty
+      # Il canale è fissato a 1420794687714754712 dentro index.js. 
+      # Se preferisci passarlo da env, aggiungi:
+      # ALLOWED_CHANNEL_ID: "1420794687714754712"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
