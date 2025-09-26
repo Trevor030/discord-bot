@@ -23,7 +23,7 @@ async function getServerStatus() {
     const s = await getServer();
     const data = await s.inspect();
     return data.State.Running ? "Acceso" : "Spento";
-  } catch (_) {
+  } catch {
     return "unknown";
   }
 }
@@ -33,7 +33,7 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent, // ATTIVA "Message Content Intent" nel Dev Portal
+    GatewayIntentBits.MessageContent, // ⚠️ abilita “Message Content Intent” nel Dev Portal
   ],
 });
 
@@ -47,15 +47,13 @@ client.on("messageCreate", async (m) => {
     if (m.author.bot) return;
     if (!m.content.startsWith(PREFIX)) return;
 
-    // ✅ canale autorizzato
+    // canale autorizzato
     if (m.channel.id !== ALLOWED_CHANNEL_ID) {
       return m.reply(`❌ Usa i comandi solo in <#${ALLOWED_CHANNEL_ID}>.`);
     }
 
-    // parsing base
-    const [cmd, sub, ...rest] = m.content.trim().slice(PREFIX.length).split(/\s+/);
+    const [cmd, sub] = m.content.trim().slice(PREFIX.length).split(/\s+/, 2);
 
-    // solo !server ...
     if (cmd !== "server") return;
 
     if (!sub || sub === "help") {
@@ -92,7 +90,6 @@ client.on("messageCreate", async (m) => {
       );
     }
 
-    // fallback
     return m.reply("Comandi: `!server status | on | off | restart | debug`");
   } catch (err) {
     console.error(err);
