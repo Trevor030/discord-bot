@@ -2,7 +2,7 @@ const { Client, GatewayIntentBits } = require("discord.js");
 const Docker = require("dockerode");
 
 // ==== ENV ====
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;                    // obbligatorio
+const DISCORD_TOKEN = process.env.DISCORD_TOKEN; // obbligatorio
 const CRAFTY_CONTAINER = process.env.CRAFTY_CONTAINER || "big-bear-crafty";
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID || "1420794687714754712";
 const PREFIX = "!"; // prefisso unico
@@ -68,7 +68,21 @@ client.on("messageCreate", async (m) => {
     if (sub === "on") {
       const s = await getServer();
       await s.start();
-      return m.reply("🚀 Server Avviato.");
+
+      // Primo messaggio immediato
+      const msg = await m.reply("🚀 Server in Accensione...");
+
+      // Dopo 30 secondi
+      setTimeout(() => {
+        msg.reply("⏳ Ci siamo quasi...");
+      }, 30_000);
+
+      // Dopo 60 secondi
+      setTimeout(() => {
+        msg.reply("✅ Server Acceso!");
+      }, 60_000);
+
+      return;
     }
 
     if (sub === "off") {
