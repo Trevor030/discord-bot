@@ -37,30 +37,13 @@ function isUrl(str) {
   try { new URL(str); return true } catch { return false }
 }
 
-// ---------- FAST PATH (no transcode): yt-dlp -> WebM/Opus ----------
-function ytOpusStream(urlOrQuery) {
-  // Try to fetch an opus stream directly (very fast start)
-  const args = ['-f', 'bestaudio[acodec=opus]/bestaudio', '--no-playlist', '-o', '-', urlOrQuery]
+// --------- OPUS-ONLY: yt-dlp -> WebM/Opus direct (no transcode) ---------
+function ytOpusOnly(urlOrQuery) {
+  // Force opus; if not available, yt-dlp will exit non-zero
+  const args = ['-f', 'bestaudio[acodec=opus]', '--no-playlist', '-o', '-', urlOrQuery]
   const child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] })
-  child.stderr.on('data', d => console.error('[yt-dlp opus]', d.toString()))
+  child.stderr.on('data', d => console.error('[yt-dlp opus-only]', d.toString()))
   return child
-}
-
-// ---------- FALLBACK (transcode): yt-dlp -> ffmpeg -> Ogg/Opus ----------
-function transcodePipeline(urlOrQuery) {
-  const ytdlp = spawn('yt-dlp', ['-f', 'bestaudio', '--no-playlist', '-o', '-', urlOrQuery], { stdio: ['ignore', 'pipe', 'pipe'] })
-  ytdlp.stderr.on('data', d => console.error('[yt-dlp]', d.toString()))
-  const ffmpeg = spawn('ffmpeg', [
-    '-loglevel', 'error', '-hide_banner',
-    '-i', 'pipe:0',
-    '-vn',
-    '-ac', '2',
-    '-c:a', 'libopus', '-b:a', '128k',
-    '-f', 'ogg', 'pipe:1'
-  ], { stdio: ['pipe', 'pipe', 'pipe'] })
-  ytdlp.stdout.pipe(ffmpeg.stdin)
-  ffmpeg.stderr.on('data', d => console.error('[ffmpeg]', d.toString()))
-  return ffmpeg
 }
 
 async function resolveYouTube(query) {
@@ -89,32 +72,22 @@ async function playNext(guildId) {
   try {
     const { url, title } = await resolveYouTube(next.query)
 
-    // 1) Fast path: try WebM/Opus direct
-    let proc = ytOpusStream(url)
-    let resource = createAudioResource(proc.stdout, { inputType: StreamType.WebmOpus })
-
-    // If the opus path errors early, fallback to transcode
+    // Try strictly Opus
+    const proc = ytOpusOnly(url)
     let started = false
-    const startTimer = setTimeout(() => {
-      if (!started) console.log('Startup taking longer than expected (opus path)...')
-    }, 3000)
-
-    // Monitor child exit quickly; if it closes before player starts, fallback
-    let fellBack = false
     proc.once('close', code => {
-      if (!started && !fellBack) {
-        console.warn('Direct opus stream ended before start; falling back to ffmpeg. code=', code)
-        fellBack = true
-        proc = transcodePipeline(url)
-        resource = createAudioResource(proc.stdout, { inputType: StreamType.OggOpus })
-        data.player.play(resource)
+      if (!started) {
+        console.warn('Opus-only stream ended before start. code=', code)
+        data.textChannel?.send('⏭️ Questo video **non ha traccia Opus** oppure la ricerca è fallita. Skippato per mantenere avvio immediato.')
+        playNext(guildId)
       }
     })
 
-    data.player.once(AudioPlayerStatus.Playing, () => { started = true; clearTimeout(startTimer) })
+    const resource = createAudioResource(proc.stdout, { inputType: StreamType.WebmOpus })
+    data.player.once(AudioPlayerStatus.Playing, () => { started = true })
     data.player.play(resource)
 
-    const embed = new EmbedBuilder().setTitle('▶️ In riproduzione').setDescription(`[${title}](${url})`).setFooter({ text: `Richiesto da ${next.requestedBy}` })
+    const embed = new EmbedBuilder().setTitle('▶️ In riproduzione (Opus diretto)').setDescription(`[${title}](${url})`).setFooter({ text: `Richiesto da ${next.requestedBy}` })
     data.textChannel?.send({ embeds: [embed] })
   } catch (err) {
     console.error('playNext error:', err)
