@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits } = require("discord.js");
+oconst { Client, GatewayIntentBits } = require("discord.js");
 const Docker = require("dockerode");
 
 // ==== ENV ====
@@ -19,7 +19,7 @@ async function getServerStatus() {
   try {
     const s = await getServer();
     const data = await s.inspect();
-    return data.State.Running ? "running" : "stopped";
+    return data.State.Running ? "Acceso" : "Spento";
   } catch { return "unknown"; }
 }
 
@@ -105,7 +105,7 @@ client.on("messageCreate", async (m) => {
     // ✅ Comandi validi NON vengono eliminati subito (si elimineranno dopo 24h)
     if (sub === "status") {
       const st = await getServerStatus();
-      await replyAndSchedule(`📊 Stato server **${CRAFTY_CONTAINER}**: **${st}**`);
+      await replyAndSchedule(`📊 Stato Server: **${st}**`);
       scheduleDelete(m, DAY_MS); // elimina il messaggio UTENTE tra 24h (non subito)
       return;
     }
@@ -114,7 +114,7 @@ client.on("messageCreate", async (m) => {
       const s = await getServer();
       await s.start();
 
-      const msg = await m.reply("🚀 Server in accensione...");
+      const msg = await m.reply("🚀 Server in Accensione...");
       scheduleDelete(msg, DAY_MS);
 
       setTimeout(async () => {
@@ -123,7 +123,7 @@ client.on("messageCreate", async (m) => {
       }, 30_000);
 
       setTimeout(async () => {
-        const done = await m.reply("✅ Server acceso!");
+        const done = await m.reply("✅ Server Acceso!");
         scheduleDelete(done, DAY_MS);
       }, 60_000);
 
@@ -134,7 +134,7 @@ client.on("messageCreate", async (m) => {
     if (sub === "off") {
       const s = await getServer();
       await s.stop();
-      await replyAndSchedule("⛔️ Server fermato.");
+      await replyAndSchedule("⛔️ Server Fermato.");
       scheduleDelete(m, DAY_MS);
       return;
     }
@@ -142,7 +142,7 @@ client.on("messageCreate", async (m) => {
     if (sub === "restart") {
       const s = await getServer();
       await s.restart();
-      await replyAndSchedule("🔄 Server riavviato.");
+      await replyAndSchedule("🔄 Server Riavviato Attendi.");
       scheduleDelete(m, DAY_MS);
       return;
     }
