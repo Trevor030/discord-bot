@@ -2,7 +2,10 @@
   "name": "discord-crafty-bot",
   "version": "1.0.0",
   "main": "index.js",
-  "scripts": { "start": "node index.js" },
+  "scripts": {
+    "start": "node index.js",
+    "reset": "node reset-commands.js"
+  },
   "dependencies": {
     "discord.js": "^14.15.3",
     "dockerode": "^4.0.2"
