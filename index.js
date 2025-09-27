@@ -5,6 +5,8 @@ await sodium.ready
 import { Client, GatewayIntentBits, EmbedBuilder } from 'discord.js'
 import { joinVoiceChannel, createAudioPlayer, createAudioResource, NoSubscriberBehavior, AudioPlayerStatus, getVoiceConnection, StreamType } from '@discordjs/voice'
 import { spawn } from 'child_process'
+import https from 'https'
+import { Readable } from 'stream'
 
 const PREFIX = '!'
 const queues = new Map()
@@ -33,35 +35,82 @@ async function connectToVoice(channel) {
   })
 }
 
-function isUrl(str) {
-  try { new URL(str); return true } catch { return false }
-}
+function isUrl(str) { try { new URL(str); return true } catch { return false } }
 
-// --------- OPUS-ONLY: yt-dlp -> WebM/Opus direct (no transcode) ---------
-function ytOpusOnly(urlOrQuery) {
-  // Force opus; if not available, yt-dlp will exit non-zero
-  const args = ['-f', 'bestaudio[acodec=opus]', '--no-playlist', '-o', '-', urlOrQuery]
-  const child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] })
-  child.stderr.on('data', d => console.error('[yt-dlp opus-only]', d.toString()))
-  return child
-}
-
+// Resolve title + best opus URL quickly via yt-dlp, without starting a download process that stays alive
 async function resolveYouTube(query) {
-  if (isUrl(query)) return { url: query, title: query }
+  if (isUrl(query)) {
+    // If it's already a URL, try to fetch title + opus URL with yt-dlp
+    return await resolveWithYtDlp(query)
+  } else {
+    return await resolveWithYtDlp(query, true)
+  }
+}
+
+function resolveWithYtDlp(input, useSearch=false) {
   return new Promise((resolve, reject) => {
-    const args = ['--default-search', 'ytsearch', '-f', 'bestaudio', '--no-playlist', '--get-title', '--get-url', query]
+    const target = useSearch ? input : input
+    const args = [
+      '--no-playlist',
+      '--no-progress',
+      '--force-ipv4',
+      '-f', 'bestaudio[acodec=opus]/bestaudio',
+      '--get-title',
+      '--get-url'
+    ]
+    if (useSearch) args.unshift('--default-search','ytsearch')
+    args.push(target)
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    proc.stderr.on('data', d => console.error('[yt-dlp search]', d.toString()))
-    let output = ''
-    proc.stdout.on('data', d => { output += d.toString() })
+    let out = ''
+    proc.stdout.on('data', d => { out += d.toString() })
+    proc.stderr.on('data', d => console.error('[yt-dlp resolve]', d.toString()))
     proc.on('close', code => {
-      if (code !== 0) return reject(new Error('yt-dlp search failed'))
-      const lines = output.trim().split('\n')
+      if (code !== 0) return reject(new Error('yt-dlp resolve failed'))
+      const lines = out.trim().split('\n')
       if (lines.length < 2) return reject(new Error('Nessun risultato valido trovato.'))
-      const title = lines[0]; const url = lines[1]
-      resolve({ url, title })
+      const title = lines[0]
+      const url = lines[1]
+      resolve({ title, url })
     })
   })
+}
+
+// Direct HTTP streaming with keep-alive; no ffmpeg in the fast path
+function httpOpusStream(mediaUrl) {
+  const agent = new https.Agent({ keepAlive: true, maxSockets: 6 })
+  return new Promise((resolve, reject) => {
+    const req = https.get(mediaUrl, {
+      agent,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Node Discord Music Bot)',
+        'Accept': '*/*',
+        'Connection': 'keep-alive'
+      }
+    }, (res) => {
+      if (res.statusCode !== 200) {
+        return reject(new Error('HTTP ' + res.statusCode))
+      }
+      // Convert web stream to Node Readable if necessary (res is already Readable)
+      resolve(res)
+    })
+    req.on('error', reject)
+  })
+}
+
+function transcodePipeline(urlOrQuery) {
+  const ytdlp = spawn('yt-dlp', ['-f', 'bestaudio', '--no-playlist', '-o', '-', urlOrQuery], { stdio: ['ignore', 'pipe', 'pipe'] })
+  ytdlp.stderr.on('data', d => console.error('[yt-dlp]', d.toString()))
+  const ffmpeg = spawn('ffmpeg', [
+    '-loglevel', 'error', '-hide_banner',
+    '-i', 'pipe:0',
+    '-vn',
+    '-ac', '2',
+    '-c:a', 'libopus', '-b:a', '128k',
+    '-f', 'ogg', 'pipe:1'
+  ], { stdio: ['pipe', 'pipe', 'pipe'] })
+  ytdlp.stdout.pipe(ffmpeg.stdin)
+  ffmpeg.stderr.on('data', d => console.error('[ffmpeg]', d.toString()))
+  return ffmpeg.stdout
 }
 
 async function playNext(guildId) {
@@ -72,22 +121,28 @@ async function playNext(guildId) {
   try {
     const { url, title } = await resolveYouTube(next.query)
 
-    // Try strictly Opus
-    const proc = ytOpusOnly(url)
+    // Quick attempt: use direct HTTP stream (assumes opus/webm from yt-dlp format selection)
     let started = false
-    proc.once('close', code => {
+    let resource
+    try {
+      const httpStream = await httpOpusStream(url)
+      resource = createAudioResource(httpStream, { inputType: StreamType.WebmOpus })
+      data.player.once(AudioPlayerStatus.Playing, () => { started = true })
+      data.player.play(resource)
+    } catch (e) {
+      console.warn('Direct HTTP stream failed, falling back to ffmpeg:', e.message)
+    }
+
+    // Fallback only if not started within a short window
+    setTimeout(() => {
       if (!started) {
-        console.warn('Opus-only stream ended before start. code=', code)
-        data.textChannel?.send('⏭️ Questo video **non ha traccia Opus** oppure la ricerca è fallita. Skippato per mantenere avvio immediato.')
-        playNext(guildId)
+        const trans = transcodePipeline(url)
+        resource = createAudioResource(trans, { inputType: StreamType.OggOpus })
+        data.player.play(resource)
       }
-    })
+    }, 1500)
 
-    const resource = createAudioResource(proc.stdout, { inputType: StreamType.WebmOpus })
-    data.player.once(AudioPlayerStatus.Playing, () => { started = true })
-    data.player.play(resource)
-
-    const embed = new EmbedBuilder().setTitle('▶️ In riproduzione (Opus diretto)').setDescription(`[${title}](${url})`).setFooter({ text: `Richiesto da ${next.requestedBy}` })
+    const embed = new EmbedBuilder().setTitle('▶️ In riproduzione').setDescription(`[${title}](${url})`).setFooter({ text: `Richiesto da ${next.requestedBy}` })
     data.textChannel?.send({ embeds: [embed] })
   } catch (err) {
     console.error('playNext error:', err)
